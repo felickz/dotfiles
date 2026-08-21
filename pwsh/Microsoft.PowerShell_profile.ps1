@@ -160,6 +160,60 @@ Write-Host "Added " -NoNewline
 Write-Host "Get-LastCommandExecutionTime" -ForegroundColor Green -NoNewline
 Write-Host " function to display the duration of the last command"
 
+##
+## DisplayLink monitor recovery
+## Resets failed DisplayLink display adapters and monitor endpoints after sleep.
+## Usage: Restart-Monitors
+##
+function Restart-Monitors {
+    $script = @'
+$ErrorActionPreference = 'Stop'
+$log = Join-Path $env:TEMP 'restart-monitors.log'
+"Starting monitor reset: $(Get-Date -Format o)" | Set-Content -Path $log
+
+$displayLinkAdapters = Get-PnpDevice -PresentOnly -Class Display | Where-Object {
+    if ($_.Status -eq 'OK') { return $false }
+    $provider = Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_DriverProvider' -ErrorAction SilentlyContinue
+    $provider.Data -eq 'DisplayLink' -or $_.FriendlyName -match 'DisplayLink|Plugable'
+}
+$monitorEndpoints = Get-PnpDevice -PresentOnly -Class Monitor | Where-Object { $_.Status -ne 'OK' }
+$targets = @($displayLinkAdapters) + @($monitorEndpoints) |
+    Group-Object -Property InstanceId |
+    ForEach-Object { $_.Group[0] }
+
+if (-not $targets) {
+    'No failed DisplayLink adapters or monitor endpoints were found.' | Add-Content -Path $log
+    return
+}
+
+foreach ($device in $targets) {
+    "Disabling $($device.FriendlyName) [$($device.InstanceId)]" | Add-Content -Path $log
+    Disable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
+}
+Start-Sleep -Seconds 5
+foreach ($device in $targets) {
+    "Enabling $($device.FriendlyName) [$($device.InstanceId)]" | Add-Content -Path $log
+    Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
+}
+Start-Sleep -Seconds 10
+foreach ($device in $targets) {
+    $current = Get-PnpDevice -InstanceId $device.InstanceId
+    $problem = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode').Data
+    "$($current.FriendlyName): Status=$($current.Status); ProblemCode=$problem" | Add-Content -Path $log
+}
+'Reset finished.' | Add-Content -Path $log
+Get-Content -Path $log
+'@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile', '-EncodedCommand', $encodedCommand
+    Write-Host "UAC prompt sent - approve to reset failed DisplayLink adapters and monitors." -ForegroundColor Yellow
+    Write-Host "Results will be written to $env:TEMP\restart-monitors.log" -ForegroundColor DarkGray
+}
+
+Write-Host "Added " -NoNewline
+Write-Host "Restart-Monitors" -ForegroundColor Green -NoNewline
+Write-Host " function to reset failed DisplayLink adapters and monitor endpoints"
+
 
 
 ##
