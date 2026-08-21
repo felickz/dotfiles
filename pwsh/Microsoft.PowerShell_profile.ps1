@@ -1,3 +1,10 @@
+# NOTE TO AI AGENTS: this profile is mirrored (as a curated, non-sensitive
+# subset) at https://github.com/felickz/dotfiles
+# (D:\repos\felickz\dotfiles\pwsh\Microsoft.PowerShell_profile.ps1). If you make
+# non-sensitive changes here (new/updated functions, no secrets or private
+# paths/hostnames), also update and push the equivalent change to that repo.
+Write-Output "[reminder] Non-sensitive changes to this profile should also be pushed to felickz/dotfiles (D:\repos\felickz\dotfiles)."
+
 # Animated fly-in effect for ASCII art
 $asciiLines = @(
     "  _____ _____ _     ___ ____ _  ______   ____  ____  __",
@@ -39,10 +46,6 @@ Write-Host "Loading PowerShell profile from " -NoNewline
 Write-Host "`$PROFILE" -ForegroundColor Green -NoNewline
 Write-Host ": $PROFILE"
 
-##
-## Azure CLI tab completion
-## Enables IntelliSense-style autocompletion for `az` commands using argcomplete.
-##
 Register-ArgumentCompleter -Native -CommandName az -ScriptBlock {
     param($commandName, $wordToComplete, $cursorPosition)
     $completion_file = New-TemporaryFile
@@ -72,11 +75,11 @@ if (Test-Path($ChocolateyProfile)) {
   Import-Module "$ChocolateyProfile"
 }
 
-##
-## Mock Stripe API key generator
-## Produces a realistic-looking sk_live_ key for testing secret-scanning tools.
-## Usage: New-StripeKeyMock
-##
+# #output to profile console that we are installing copilot alias:
+# Write-Host "Installing gh copilot alias `ghcs` and `ghce` via C:\Users\chadbentz\Documents\PowerShell\gh-copilot.ps1"
+# . C:\Users\chadbentz\Documents\PowerShell\gh-copilot.ps1
+
+# Function to generate mock Stripe API key
 function New-StripeKeyMock {
     $baseStripeString = "sk_live_"
     # Generate random hex characters (similar to openssl rand -hex)
@@ -90,16 +93,6 @@ function New-StripeKeyMock {
     return $baseStripeString + $stringRand
 }
 
-Write-Host "Added " -NoNewline
-Write-Host "New-StripeKeyMock" -ForegroundColor Green -NoNewline
-Write-Host " function for generating mock Stripe API keys"
-
-
-##
-## Base64 encode/decode utility
-## Supports strings, files, and pipeline input.
-## Usage: b64 'hello'  |  b64 -Decode 'aGVsbG8='  |  b64 -InFile img.png -OutFile img.b64
-##
 function b64 {
   param(
     [switch]$Decode,
@@ -134,15 +127,6 @@ function b64 {
 }
 
 
-Write-Host "Added " -NoNewline
-Write-Host "b64" -ForegroundColor Green -NoNewline
-Write-Host " command: b64 'hello' or b64 -Decode 'ZGVtbzpwQDU1dzByZA=='"
-
-##
-## Last command execution time
-## Displays the wall-clock duration of the most recent command from history.
-## Usage: Get-LastCommandExecutionTime
-##
 function Get-LastCommandExecutionTime {
     $last = Get-History -Count 1
     if (-not $last) {
@@ -156,16 +140,102 @@ function Get-LastCommandExecutionTime {
     Write-Host $duration -ForegroundColor Green
 }
 
-Write-Host "Added " -NoNewline
-Write-Host "Get-LastCommandExecutionTime" -ForegroundColor Green -NoNewline
-Write-Host " function to display the duration of the last command"
+function Check-CopilotUpdates {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return }
+
+    $extensionList = gh extension list 2>&1 | Out-String
+    if ($extensionList -notmatch 'gh copilot\s+github/gh-copilot\s+v?([\d.]+)') { return }
+
+    $currentVersion = $matches[1]
+
+    try {
+        $apiUrl = "https://api.github.com/repos/github/gh-copilot/releases/latest"
+        $response = Invoke-RestMethod -Uri $apiUrl -TimeoutSec 3 -ErrorAction Stop
+        $latestVersion = $response.tag_name -replace '^v', ''
+
+        if ($currentVersion -ne $latestVersion) {
+            Write-Host "⚠   GitHub Copilot CLI update available: v$currentVersion → v$latestVersion" -ForegroundColor Yellow
+            Write-Host "  Update with: gh extension upgrade gh-copilot" -ForegroundColor Cyan
+        }
+        else {
+            Write-Host "gh extension:" -NoNewLine
+            Write-Host "gh-copilot " -ForegroundColor Green -NoNewLine
+            Write-Host "is up to date: v$currentVersion"
+        }
+    } catch {
+        Write-Host
+    }
+}
+
+function Update-GhExtensions {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return }
+
+    Write-Host "gh extensions: " -NoNewline
+    Write-Host "upgrading all..." -ForegroundColor Cyan
+    $output = gh extension upgrade --all 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        $output.Trim().Split("`n") | ForEach-Object {
+            if ($_ -match '\S') { Write-Host "  $_" -ForegroundColor DarkGray }
+        }
+    } else {
+        Write-Host "  gh extension upgrade --all failed:" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor DarkYellow
+    }
+}
+
+function Update-CopilotPlugins {
+    if (-not (Get-Command copilot -ErrorAction SilentlyContinue)) { return }
+
+    Write-Host "copilot plugins: " -NoNewline
+    Write-Host "updating all..." -ForegroundColor Cyan
+    $output = copilot plugin update --all 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        $output.Trim().Split("`n") | ForEach-Object {
+            if ($_ -match '\S') { Write-Host "  $_" -ForegroundColor DarkGray }
+        }
+    } else {
+        Write-Host "  copilot plugin update --all failed:" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor DarkYellow
+    }
+}
 
 ##
-## DisplayLink monitor recovery
-## Resets failed DisplayLink display adapters and monitor endpoints after sleep.
-## Usage: Restart-Monitors
+## Override MCP defaults for Copilot CLI
 ##
+function copilot-all {
+    & copilot.ps1 --add-github-mcp-toolset all `
+        @args
+}
+
+function copilot-ghas {
+    & copilot.ps1 --add-github-mcp-toolset code_security `
+        --add-github-mcp-toolset dependabot `
+        --add-github-mcp-toolset secret_protection `
+        --add-github-mcp-toolset security_advisories `
+        --add-github-mcp-tool run_secret_scanning `
+        @args
+}
+
+# Lightweight session for pre-commit dependency vulnerability scanning
+# See: https://github.blog/changelog/2026-05-05-dependency-scanning-with-github-mcp-server-is-in-public-preview/
+function copilot-depcheck {
+    & copilot.ps1 --add-github-mcp-toolset dependabot `
+        @args
+}
+
+function Restart-Explorer {
+    Stop-Process -Name explorer -Force
+    Stop-Process -Name itype -Force -ErrorAction SilentlyContinue
+    Start-Process explorer.exe
+    Start-Process itype.exe
+    Write-Host "Explorer and itype restarted!" -ForegroundColor Green
+}
+
 function Restart-Monitors {
+    <#
+    .SYNOPSIS
+    Restarts failed DisplayLink adapters and monitor endpoints after waking from sleep.
+    #>
     $script = @'
 $ErrorActionPreference = 'Stop'
 $log = Join-Path $env:TEMP 'restart-monitors.log'
@@ -210,41 +280,6 @@ Get-Content -Path $log
     Write-Host "Results will be written to $env:TEMP\restart-monitors.log" -ForegroundColor DarkGray
 }
 
-Write-Host "Added " -NoNewline
-Write-Host "Restart-Monitors" -ForegroundColor Green -NoNewline
-Write-Host " function to reset failed DisplayLink adapters and monitor endpoints"
-
-
-
-##
-## Copilot CLI wrapper with default MCP security toolsets
-## Invokes copilot.ps1 with pre-configured MCP toolsets for code security,
-## Dependabot, secret protection, security advisories, and secret scanning.
-## Usage: copilot <args>
-##
-function copilot {
-    & copilot.ps1 --add-github-mcp-toolset code_security `
-        --add-github-mcp-toolset Dependabot `
-        --add-github-mcp-toolset secret_protection `
-        --add-github-mcp-toolset security_advisories `
-        --add-github-mcp-tool run_secret_scanning `
-        @args
-}
-
-Write-Host "Added " -NoNewline
-Write-Host "copilot" -ForegroundColor Green -NoNewline
-Write-Host " function with default MCP toolsets (code_security, Dependabot, secret_protection, security_advisories, run_secret_scanning)"
-
-##
-## CodeQL CLI upgrader (latest or pinned version)
-## Downloads codeql-bundle-win64 from github/codeql-action - either the latest
-## release, or a specific -Version you name (useful for pinning to what a repo's
-## .codeqlversion actually expects, even after a newer CLI has since shipped).
-## Swaps it into C:\Utils\codeql (keeping a -old backup until success), checks
-## out the matching codeql-cli/vX.Y.Z ref in the ql submodule, and prints
-## "codeql --version" to confirm.
-## Usage: Upgrade-CodeQL  |  Upgrade-CodeQL -Version 2.26.1
-##
 function Upgrade-CodeQL {
     <#
     .SYNOPSIS
@@ -392,70 +427,64 @@ function Upgrade-CodeQL {
     & $codeqlExe --version
 }
 
-Write-Host "Added " -NoNewline
-Write-Host "Upgrade-CodeQL" -ForegroundColor Green -NoNewline
-Write-Host " function to install latest (or -Version pinned) CodeQL CLI + sync ql submodule ref"
-
 # Set-Location -Path "C:\repos"
 # Write-Host "Setting start directory"
 
 
-##
-## PowerToys / WinGet CommandNotFound module
-## Suggests installable packages via winget when a typed command is not found.
-## Requires: PowerToys with the CommandNotFound experimental feature enabled.
-## See: https://learn.microsoft.com/windows/powertoys/cmd-not-found
-##
 #f45873b3-b655-43a6-b217-97c00aa0db58 PowerToys CommandNotFound module
-Import-Module -Name Microsoft.WinGet.CommandNotFound
 
-Write-Host "Imported " -NoNewLine
-Write-Host "Microsoft.WinGet.CommandNotFound " -ForegroundColor Green -NoNewline
-Write-Host "module for winget suggestions on command not found errors."
+Import-Module -Name Microsoft.WinGet.CommandNotFound
 
 #f45873b3-b655-43a6-b217-97c00aa0db58
 
+# ─── Profile Summary ───────────────────────────────────────────────
+Write-Host ""
+Write-Host "── Custom Functions ──────────────────────────────────────" -ForegroundColor DarkGray
+$functions = @(
+    @{ Name = "New-StripeKeyMock";           Desc = "Generate mock Stripe API key" }
+    @{ Name = "b64";                         Desc = "Base64 encode/decode (b64 'hi' | b64 -Decode 'aGk=')" }
+    @{ Name = "Get-LastCommandExecutionTime"; Desc = "Show duration of last command" }
+    @{ Name = "copilot-all";                 Desc = "Copilot CLI with all MCP toolsets" }
+    @{ Name = "copilot-ghas";               Desc = "Copilot CLI with GHAS MCP toolsets" }
+    @{ Name = "copilot-depcheck";            Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
+    @{ Name = "Restart-Explorer";            Desc = "Kill and restart Windows Explorer + itype.exe" }
+    @{ Name = "Restart-Monitors";            Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
+    @{ Name = "Upgrade-CodeQL";              Desc = "Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref" }
+)
+foreach ($f in $functions) {
+    Write-Host "  " -NoNewline
+    Write-Host ("{0,-30}" -f $f.Name) -ForegroundColor Green -NoNewline
+    Write-Host $f.Desc
+}
 
+Write-Host ""
+Write-Host "── Modules Loaded ────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline
+Write-Host "Microsoft.WinGet.CommandNotFound" -ForegroundColor Green -NoNewline
+Write-Host "  ✔ loaded"
 
-#EOL Stuff:
+Write-Host "  " -NoNewline
+Write-Host "az CLI tab-completion" -ForegroundColor Green -NoNewline
+Write-Host "              ✔ registered"
 
-                # #output to profile console that we are installing copilot alias:
-                # Write-Host "Installing gh copilot alias `ghcs` and `ghce` via C:\Users\chadbentz\Documents\PowerShell\gh-copilot.ps1"
-                # . C:\Users\chadbentz\Documents\PowerShell\gh-copilot.ps1
+Write-Host ""
+Write-Host "── Config Paths ──────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline
+Write-Host "Copilot CLI MCP:  " -ForegroundColor Green -NoNewline
+Write-Host "$env:USERPROFILE\.copilot\mcp-config.json"
+Write-Host "  " -NoNewline
+Write-Host "VS Code Settings: " -ForegroundColor Green -NoNewline
+Write-Host "$env:APPDATA\Code\User\settings.json"
+Write-Host "  " -NoNewline
+Write-Host "VS Code MCP:      " -ForegroundColor Green -NoNewline
+Write-Host "$env:APPDATA\Code\User\mcp.json"
 
-                ##
-                ## GitHub Copilot CLI update checker
-                ## Compares the locally installed gh-copilot extension version against the
-                ## latest release on GitHub and prints a notice when an update is available.
-                ##
+Write-Host ""
+Write-Host "── Update Checks ─────────────────────────────────────────" -ForegroundColor DarkGray
 
-                # function Check-CopilotUpdates {
-                #     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return }
+Check-CopilotUpdates
+Update-GhExtensions
+Update-CopilotPlugins
 
-                #     $extensionList = gh extension list 2>&1 | Out-String
-                #     if ($extensionList -notmatch 'gh copilot\s+github/gh-copilot\s+v?([\d.]+)') { return }
-
-                #     $currentVersion = $matches[1]
-
-                #     try {
-                #         $apiUrl = "https://api.github.com/repos/github/gh-copilot/releases/latest"
-                #         $response = Invoke-RestMethod -Uri $apiUrl -TimeoutSec 3 -ErrorAction Stop
-                #         $latestVersion = $response.tag_name -replace '^v', ''
-
-                #         if ($currentVersion -ne $latestVersion) {
-                #             Write-Host "⚠   GitHub Copilot CLI update available: v$currentVersion → v$latestVersion" -ForegroundColor Yellow
-                #             Write-Host "  Update with: gh extension upgrade gh-copilot" -ForegroundColor Cyan
-                #         }
-                #         else {
-                #             Write-Host "gh extension:" -NoNewLine
-                #             Write-Host "gh-copilot " -ForegroundColor Green -NoNewLine
-                #             Write-Host "is up to date: v$currentVersion"
-                #         }
-                #     } catch {
-                #         Write-Host
-                #     }
-                # }
-
-
-                ## CLI is self updationg now - Just call /update on the CLI
-                ##Check-CopilotUpdates
+Write-Host "──────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host ""
