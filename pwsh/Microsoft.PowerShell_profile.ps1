@@ -315,6 +315,32 @@ function Get-ExternalCamera {
     }
 }
 
+# Phone-as-webcam / other virtual cameras (e.g. the Pixel showing up via Phone Link).
+# Windows ships no policy or registry switch that disables just the connected camera -
+# the only documented control is Settings > Bluetooth & devices > Mobile devices >
+# [your phone] > "Use as a connected camera". Set this to $true if that toggle will not
+# stick, and swmon will keep virtual cameras disabled in BOTH monitor modes. Left $false
+# by default so Phone Link (notifications, messages, calls) is untouched out of the box.
+$Global:SwmonDisableVirtualCameras = $false
+
+function Get-VirtualCamera {
+    <#
+    .SYNOPSIS
+    Lists software/virtual camera devices, such as a phone exposed as a webcam.
+    .DESCRIPTION
+    These are not physical cameras, so they do not carry a real device container and are
+    invisible to Get-ExternalCamera. They register under SWD\VCAMDEVAPI, which is matched
+    here deliberately narrowly: sibling software nodes like SWD\SGDEVAPI (Surface Camera
+    Sensor Group) and SWD\DRIVERENUM (Windows Studio Effects) back the built-in camera and
+    must be left alone.
+    #>
+    [CmdletBinding()]
+    param()
+
+    Get-PnpDevice -Class SoftwareDevice -PresentOnly -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceId -like 'SWD\VCAMDEVAPI\*' }
+}
+
 function Set-ExternalCameraState {
     <#
     .SYNOPSIS
@@ -342,19 +368,24 @@ function Set-ExternalCameraState {
         [ValidateSet('Enabled', 'Disabled')]
         [string]$State,
 
+        [switch]$IncludeVirtual,
+
         [switch]$Quiet
     )
 
     $stateFile = Join-Path $env:LOCALAPPDATA 'switch-monitorsetup-cameras.json'
     $cameras = @(Get-ExternalCamera)
+    $virtual = if ($IncludeVirtual) { @(Get-VirtualCamera) } else { @() }
 
-    if (-not $cameras) {
+    if (-not $cameras -and -not $virtual) {
         if (-not $Quiet) { Write-Host "  No external cameras detected." -ForegroundColor DarkGray }
         return
     }
 
+    # Physical external cameras follow the requested state.
     if ($State -eq 'Disabled') {
-        $targets = @($cameras | Where-Object { $_.Status -eq 'OK' })
+        $toDisable = @($cameras | Where-Object { $_.Status -eq 'OK' })
+        $toEnable = @()
     }
     else {
         $remembered = if (Test-Path $stateFile) {
@@ -362,48 +393,68 @@ function Set-ExternalCameraState {
         }
         else { @() }
 
-        $targets = if ($remembered) {
+        $toEnable = if ($remembered) {
             @($cameras | Where-Object { $_.InstanceId -in $remembered -and $_.Status -ne 'OK' })
         }
         else {
             @($cameras | Where-Object { $_.Status -ne 'OK' })
         }
+        $toDisable = @()
     }
 
-    if (-not $targets) {
+    # Virtual cameras are never re-enabled - they stay off in both modes, which is the
+    # whole point of the opt-in. They are also kept out of the state file so the enable
+    # path can never resurrect them.
+    $toDisable += @($virtual | Where-Object { $_.Status -eq 'OK' })
+
+    if (-not $toDisable -and -not $toEnable) {
         if (-not $Quiet) { Write-Host "  External cameras already $($State.ToLower())." -ForegroundColor DarkGray }
         if ($State -eq 'Enabled') { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
         return
     }
 
-    $names = ($targets | ForEach-Object { $_.FriendlyName } | Select-Object -Unique) -join ', '
+    $names = (@($toDisable) + @($toEnable) | ForEach-Object { $_.FriendlyName } | Select-Object -Unique) -join ', '
     if (-not $PSCmdlet.ShouldProcess($names, "Set external camera state to $State")) { return }
 
-    if ($State -eq 'Disabled') {
-        $targets.InstanceId | ConvertTo-Json -Depth 3 | Set-Content -Path $stateFile -Encoding utf8
+    if ($State -eq 'Disabled' -and $cameras) {
+        @($cameras | Where-Object { $_.Status -eq 'OK' }).InstanceId |
+            ConvertTo-Json -Depth 3 | Set-Content -Path $stateFile -Encoding utf8
     }
 
-    $verb = if ($State -eq 'Disabled') { 'Disable-PnpDevice' } else { 'Enable-PnpDevice' }
-    $idLiteral = '@(' + (($targets.InstanceId | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ',') + ')'
+    $asLiteral = {
+        param($items)
+        if (-not $items) { return '@()' }
+        '@(' + (($items.InstanceId | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ',') + ')'
+    }
 
     $payload = @'
 $ErrorActionPreference = 'Continue'
 $log = Join-Path $env:TEMP 'switch-monitorsetup-cameras.log'
-"__VERB__ : $(Get-Date -Format o)" | Set-Content -Path $log
-foreach ($id in __IDLIST__) {
+"Camera change: $(Get-Date -Format o)" | Set-Content -Path $log
+foreach ($id in __DISABLE__) {
     try {
-        __VERB__ -InstanceId $id -Confirm:$false -ErrorAction Stop
-        "OK   $id" | Add-Content -Path $log
+        Disable-PnpDevice -InstanceId $id -Confirm:$false -ErrorAction Stop
+        "DISABLED $id" | Add-Content -Path $log
     }
     catch {
-        "FAIL $id :: $($_.Exception.Message)" | Add-Content -Path $log
+        "FAIL-DISABLE $id :: $($_.Exception.Message)" | Add-Content -Path $log
+    }
+}
+foreach ($id in __ENABLE__) {
+    try {
+        Enable-PnpDevice -InstanceId $id -Confirm:$false -ErrorAction Stop
+        "ENABLED  $id" | Add-Content -Path $log
+    }
+    catch {
+        "FAIL-ENABLE $id :: $($_.Exception.Message)" | Add-Content -Path $log
     }
 }
 '@
-    $payload = $payload.Replace('__VERB__', $verb).Replace('__IDLIST__', $idLiteral)
+    $payload = $payload.Replace('__DISABLE__', (& $asLiteral $toDisable)).Replace('__ENABLE__', (& $asLiteral $toEnable))
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
 
-    Write-Host "  UAC prompt sent - approve to set $($targets.Count) camera interface(s) to $($State.ToLower()): $names" -ForegroundColor Yellow
+    $count = @($toDisable).Count + @($toEnable).Count
+    Write-Host "  UAC prompt sent - approve to update $count camera interface(s): $names" -ForegroundColor Yellow
 
     # Windows PowerShell rather than pwsh: the PnpDevice module is native there, so it
     # avoids the slower/flakier WinPS compatibility shim in PowerShell 7.
@@ -415,8 +466,8 @@ foreach ($id in __IDLIST__) {
         return
     }
 
-    $after = @(Get-ExternalCamera)
-    $stillOn = @($after | Where-Object { $_.Status -eq 'OK' })
+    $stillOn = @(Get-ExternalCamera | Where-Object { $_.Status -eq 'OK' })
+    $virtualOn = @(Get-VirtualCamera | Where-Object { $_.Status -eq 'OK' })
 
     if ($State -eq 'Disabled') {
         if ($stillOn) {
@@ -429,6 +480,15 @@ foreach ($id in __IDLIST__) {
     else {
         Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
         Write-Host "  External cameras re-enabled ($($stillOn.Count) interface(s) live)." -ForegroundColor Green
+    }
+
+    if ($IncludeVirtual) {
+        if ($virtualOn) {
+            Write-Warning "Virtual camera still present: $(($virtualOn.FriendlyName | Select-Object -Unique) -join ', '). Windows can re-register it; turn it off at Settings > Bluetooth & devices > Mobile devices."
+        }
+        else {
+            Write-Host "  Virtual cameras disabled." -ForegroundColor Green
+        }
     }
 }
 
@@ -451,6 +511,9 @@ function Switch-MonitorSetup {
     more dock-mounted camera pointing up at you from desk height. Extending back
     re-enables them. That part needs admin, so it raises a UAC prompt, but only when
     there is actually a camera to change. Use -SkipCameras to leave cameras alone.
+
+    Virtual cameras (phone-as-webcam) are separate: set $SwmonDisableVirtualCameras = $true
+    and they are disabled in BOTH modes, never re-enabled.
     .PARAMETER Mode
     Toggle (default) flips to the opposite of the current state.
     Laptop forces internal-display-only. All forces extend across every connected display.
@@ -546,7 +609,9 @@ public static extern int SetDisplayConfig(uint numPathArrayElements, IntPtr path
 
     # Cameras after the displays, so any UAC prompt lands on a screen that stays on.
     if (-not $SkipCameras) {
-        Set-ExternalCameraState -State $(if ($target -eq 'Laptop') { 'Disabled' } else { 'Enabled' })
+        Set-ExternalCameraState `
+            -State $(if ($target -eq 'Laptop') { 'Disabled' } else { 'Enabled' }) `
+            -IncludeVirtual:$Global:SwmonDisableVirtualCameras
     }
 }
 Set-Alias -Name Switch-Monitor-Setup -Value Switch-MonitorSetup
@@ -723,6 +788,7 @@ $functions = @(
     @{ Name = "Restart-Monitors";            Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
     @{ Name = "Switch-MonitorSetup";         Desc = "Toggle 4-monitor extend <-> laptop screen only + external cams (alias: swmon)" }
     @{ Name = "Set-ExternalCameraState";     Desc = "Enable/disable all non-built-in cameras (admin)" }
+    @{ Name = "Get-VirtualCamera";           Desc = "List virtual cameras (phone-as-webcam); see `$SwmonDisableVirtualCameras" }
     @{ Name = "Upgrade-CodeQL";              Desc = "Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref" }
 )
 foreach ($f in $functions) {
