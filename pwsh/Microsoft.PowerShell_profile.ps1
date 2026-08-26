@@ -280,6 +280,109 @@ Get-Content -Path $log
     Write-Host "Results will be written to $env:TEMP\restart-monitors.log" -ForegroundColor DarkGray
 }
 
+function Switch-MonitorSetup {
+    <#
+    .SYNOPSIS
+    Toggles the desktop between the full multi-monitor layout and laptop-screen-only.
+    .DESCRIPTION
+    Flips the Windows display topology using the CCD (Connecting and Configuring Displays)
+    API - the same switch Win+P performs, without the flyout. Windows keeps the arrangement
+    for each topology (monitor positions, resolutions, which one is primary) in its display
+    config database, so extending back restores the layout you already had instead of
+    stacking everything at 0,0.
+
+    With no arguments it toggles: more than one active display collapses to the laptop
+    panel, otherwise it extends across everything currently connected.
+    .PARAMETER Mode
+    Toggle (default) flips to the opposite of the current state.
+    Laptop forces internal-display-only. All forces extend across every connected display.
+    .PARAMETER TimeoutSeconds
+    How long to wait for displays to settle before reporting. DisplayLink dock monitors are
+    the slow ones. Default 15.
+    .EXAMPLE
+    Switch-MonitorSetup
+    .EXAMPLE
+    Switch-MonitorSetup -Mode Laptop
+    .EXAMPLE
+    swmon -Mode All
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [ValidateSet('Toggle', 'Laptop', 'All')]
+        [string]$Mode = 'Toggle',
+
+        [ValidateRange(0, 120)]
+        [int]$TimeoutSeconds = 15
+    )
+
+    if (-not ('Native.DisplayConfig' -as [type])) {
+        Add-Type -Namespace Native -Name DisplayConfig -MemberDefinition @'
+[DllImport("user32.dll")]
+public static extern int GetDisplayConfigBufferSizes(uint flags, out uint numPathArrayElements, out uint numModeInfoArrayElements);
+
+[DllImport("user32.dll")]
+public static extern int SetDisplayConfig(uint numPathArrayElements, IntPtr pathArray, uint numModeInfoArrayElements, IntPtr modeInfoArray, uint flags);
+'@
+    }
+
+    $QDC_ONLY_ACTIVE_PATHS = 0x00000002
+    $SDC_TOPOLOGY_INTERNAL = 0x00000001
+    $SDC_TOPOLOGY_EXTEND = 0x00000004
+    $SDC_APPLY = 0x00000080
+
+    function Get-ActiveDisplayCount {
+        $paths = 0
+        $modes = 0
+        $rc = [Native.DisplayConfig]::GetDisplayConfigBufferSizes($QDC_ONLY_ACTIVE_PATHS, [ref]$paths, [ref]$modes)
+        if ($rc -ne 0) { throw "GetDisplayConfigBufferSizes failed with code $rc." }
+        [int]$paths
+    }
+
+    $current = Get-ActiveDisplayCount
+    $target = switch ($Mode) {
+        'Laptop' { 'Laptop' }
+        'All' { 'All' }
+        default { if ($current -gt 1) { 'Laptop' } else { 'All' } }
+    }
+
+    if ($target -eq 'Laptop') {
+        $topology = $SDC_TOPOLOGY_INTERNAL
+        $fallbackArg = '/internal'
+        $label = 'laptop screen only'
+    }
+    else {
+        $topology = $SDC_TOPOLOGY_EXTEND
+        $fallbackArg = '/extend'
+        $label = 'all connected displays (extend)'
+    }
+
+    if (-not $PSCmdlet.ShouldProcess('display topology', "Switch to $label")) { return }
+
+    Write-Host "Switching to $label (currently $current active)..." -ForegroundColor Cyan
+
+    $rc = [Native.DisplayConfig]::SetDisplayConfig(0, [IntPtr]::Zero, 0, [IntPtr]::Zero, $topology -bor $SDC_APPLY)
+    if ($rc -ne 0) {
+        Write-Verbose "SetDisplayConfig returned $rc; falling back to DisplaySwitch.exe $fallbackArg"
+        Start-Process -FilePath "$env:SystemRoot\System32\DisplaySwitch.exe" -ArgumentList $fallbackArg -Wait
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 500
+        $now = Get-ActiveDisplayCount
+        $settled = if ($target -eq 'Laptop') { $now -eq 1 } else { $now -gt 1 }
+    } until ($settled -or (Get-Date) -ge $deadline)
+
+    if ($settled) {
+        Write-Host "Now driving $now display$(if ($now -ne 1) { 's' })." -ForegroundColor Green
+    }
+    else {
+        Write-Warning "Asked for '$label' but $now display(s) are active after ${TimeoutSeconds}s. DisplayLink screens can lag - re-run, or use Restart-Monitors if they stay dark."
+    }
+}
+Set-Alias -Name Switch-Monitor-Setup -Value Switch-MonitorSetup
+Set-Alias -Name swmon -Value Switch-MonitorSetup
+
 function Upgrade-CodeQL {
     <#
     .SYNOPSIS
@@ -449,6 +552,7 @@ $functions = @(
     @{ Name = "copilot-depcheck";            Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Name = "Restart-Explorer";            Desc = "Kill and restart Windows Explorer + itype.exe" }
     @{ Name = "Restart-Monitors";            Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
+    @{ Name = "Switch-MonitorSetup";         Desc = "Toggle 4-monitor extend <-> laptop screen only (alias: swmon)" }
     @{ Name = "Upgrade-CodeQL";              Desc = "Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref" }
 )
 foreach ($f in $functions) {
