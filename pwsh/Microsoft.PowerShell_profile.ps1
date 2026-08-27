@@ -614,8 +614,6 @@ public static extern int SetDisplayConfig(uint numPathArrayElements, IntPtr path
             -IncludeVirtual:$Global:SwmonDisableVirtualCameras
     }
 }
-Set-Alias -Name Switch-Monitor-Setup -Value Switch-MonitorSetup
-Set-Alias -Name swmon -Value Switch-MonitorSetup
 
 function Upgrade-CodeQL {
     <#
@@ -774,25 +772,66 @@ Import-Module -Name Microsoft.WinGet.CommandNotFound
 
 #f45873b3-b655-43a6-b217-97c00aa0db58
 
+# ─── Aliases ───────────────────────────────────────────────────────
+# Short forms for the custom functions above. Where a function uses an approved
+# verb, the alias follows PowerShell's own convention of verb AliasPrefix (see
+# Get-Verb) plus a noun abbreviation - so Restart-* is rt*, Update-* is ud*,
+# Get-* is g*, Set-* is s*, matching swmon for Switch-MonitorSetup.
+# All were checked against Get-Command for collisions before being added.
+$aliasMap = [ordered]@{
+    # Monitors + cameras
+    'swmon'               = 'Switch-MonitorSetup'
+    'Switch-Monitor-Setup' = 'Switch-MonitorSetup'
+    'rtmon'               = 'Restart-Monitors'
+    'gcam'                = 'Get-ExternalCamera'
+    'gvcam'               = 'Get-VirtualCamera'
+    'scam'                = 'Set-ExternalCameraState'
+
+    # Copilot CLI wrappers
+    'cpall'               = 'copilot-all'
+    'cpghas'              = 'copilot-ghas'
+    'cpdep'               = 'copilot-depcheck'
+
+    # Updates
+    'ccu'                 = 'Check-CopilotUpdates'
+    'udgh'                = 'Update-GhExtensions'
+    'udcp'                = 'Update-CopilotPlugins'
+    'upql'                = 'Upgrade-CodeQL'
+
+    # Misc
+    'rtexp'               = 'Restart-Explorer'
+    'nsk'                 = 'New-StripeKeyMock'
+    'elapsed'             = 'Get-LastCommandExecutionTime'
+    'glct'                = 'Get-LastCommandExecutionTime'
+}
+foreach ($alias in $aliasMap.GetEnumerator()) {
+    Set-Alias -Name $alias.Key -Value $alias.Value -Scope Global -Force
+}
+
 # ─── Profile Summary ───────────────────────────────────────────────
 Write-Host ""
 Write-Host "── Custom Functions ──────────────────────────────────────" -ForegroundColor DarkGray
 $functions = @(
-    @{ Name = "New-StripeKeyMock";           Desc = "Generate mock Stripe API key" }
-    @{ Name = "b64";                         Desc = "Base64 encode/decode (b64 'hi' | b64 -Decode 'aGk=')" }
-    @{ Name = "Get-LastCommandExecutionTime"; Desc = "Show duration of last command" }
-    @{ Name = "copilot-all";                 Desc = "Copilot CLI with all MCP toolsets" }
-    @{ Name = "copilot-ghas";               Desc = "Copilot CLI with GHAS MCP toolsets" }
-    @{ Name = "copilot-depcheck";            Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
-    @{ Name = "Restart-Explorer";            Desc = "Kill and restart Windows Explorer + itype.exe" }
-    @{ Name = "Restart-Monitors";            Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
-    @{ Name = "Switch-MonitorSetup";         Desc = "Toggle 4-monitor extend <-> laptop screen only + external cams (alias: swmon)" }
-    @{ Name = "Set-ExternalCameraState";     Desc = "Enable/disable all non-built-in cameras (admin)" }
-    @{ Name = "Get-VirtualCamera";           Desc = "List virtual cameras (phone-as-webcam); see `$SwmonDisableVirtualCameras" }
-    @{ Name = "Upgrade-CodeQL";              Desc = "Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref" }
+    @{ Alias = "nsk";     Name = "New-StripeKeyMock";            Desc = "Generate mock Stripe API key" }
+    @{ Alias = "";        Name = "b64";                          Desc = "Base64 encode/decode (b64 'hi' | b64 -Decode 'aGk=')" }
+    @{ Alias = "elapsed"; Name = "Get-LastCommandExecutionTime";  Desc = "Show duration of last command" }
+    @{ Alias = "cpall";   Name = "copilot-all";                  Desc = "Copilot CLI with all MCP toolsets" }
+    @{ Alias = "cpghas";  Name = "copilot-ghas";                 Desc = "Copilot CLI with GHAS MCP toolsets" }
+    @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
+    @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
+    @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
+    @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle 4-monitor extend <-> laptop screen only + external cams" }
+    @{ Alias = "scam";    Name = "Set-ExternalCameraState";      Desc = "Enable/disable all non-built-in cameras (admin)" }
+    @{ Alias = "gcam";    Name = "Get-ExternalCamera";           Desc = "List non-built-in cameras" }
+    @{ Alias = "gvcam";   Name = "Get-VirtualCamera";            Desc = "List virtual cameras (phone-as-webcam); see `$SwmonDisableVirtualCameras" }
+    @{ Alias = "ccu";     Name = "Check-CopilotUpdates";         Desc = "Check for Copilot CLI updates" }
+    @{ Alias = "udgh";    Name = "Update-GhExtensions";          Desc = "Update gh CLI extensions" }
+    @{ Alias = "udcp";    Name = "Update-CopilotPlugins";        Desc = "Update Copilot CLI plugins" }
+    @{ Alias = "upql";    Name = "Upgrade-CodeQL";               Desc = "Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref" }
 )
 foreach ($f in $functions) {
     Write-Host "  " -NoNewline
+    Write-Host ("{0,-9}" -f $f.Alias) -ForegroundColor Yellow -NoNewline
     Write-Host ("{0,-30}" -f $f.Name) -ForegroundColor Green -NoNewline
     Write-Host $f.Desc
 }
