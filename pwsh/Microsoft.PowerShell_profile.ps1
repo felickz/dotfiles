@@ -140,6 +140,66 @@ function Get-LastCommandExecutionTime {
     Write-Host $duration -ForegroundColor Green
 }
 
+function Get-CopilotProcess {
+    <#
+    .SYNOPSIS
+    Running GitHub Copilot CLI / app processes that contend for the shared plugin git cache.
+    .DESCRIPTION
+    Every Copilot CLI instance and the Copilot app share one marketplace git cache under
+    ~\.copilot\repos. Updating plugins while other instances are live fails part-way through
+    the marketplace fetch:
+
+        Failed to fetch GitHub marketplace github/awesome-copilot:
+        Git cache I/O failed: The process cannot access the file because it is being used
+        by another process. (os error 32)
+
+    That was reproduced directly with "copilot plugin update <name>", not inferred from the
+    batch failure, so the update functions below skip rather than fail noisily on every new
+    shell.
+
+    Matching is deliberately narrow. Microsoft's Windows Copilot is copilotapp.exe /
+    copilotapphost.exe under "Program Files (x86)\Microsoft\Copilot" and has nothing to do
+    with Copilot CLI plugins; treating it as a blocker would suppress updates permanently,
+    since it is essentially always running. Get-Process -Name matches exactly so
+    "copilotapp" already fails the name filter, and the path check keeps that true even if
+    those process names change.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $ourPaths = @(
+        '\\github-copilot-sdk\\'            # Copilot CLI, versioned install
+        '\\winget\\links\\copilot\.exe$'    # winget shim that launches the CLI
+        '\\GitHub Copilot\\github\.exe$'    # Copilot app
+    )
+
+    Get-Process -Name copilot, github -ErrorAction SilentlyContinue | Where-Object {
+        # .Path throws for processes this user cannot open; treat those as "not ours".
+        $path = try { $_.Path } catch { $null }
+        $path -and ($ourPaths | Where-Object { $path -match $_ })
+    }
+}
+
+function Test-CopilotBusy {
+    <#
+    .SYNOPSIS
+    True when a Copilot CLI or app instance is running, so plugin/extension updates should wait.
+    .PARAMETER Reason
+    Receives a human-readable summary of what is holding things up.
+    #>
+    [CmdletBinding()]
+    param([ref]$Reason)
+
+    $procs = @(Get-CopilotProcess)
+    if (-not $procs) { return $false }
+
+    if ($Reason) {
+        $Reason.Value = ($procs | Group-Object ProcessName |
+            ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '
+    }
+    $true
+}
+
 function Check-CopilotUpdates {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return }
 
@@ -168,7 +228,20 @@ function Check-CopilotUpdates {
 }
 
 function Update-GhExtensions {
+    [CmdletBinding()]
+    param([switch]$Force)
+
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { return }
+
+    $why = ''
+    if ((Test-CopilotBusy -Reason ([ref]$why)) -and -not $Force) {
+        Write-Host "gh extensions: " -NoNewline
+        Write-Host "skipped" -ForegroundColor DarkYellow -NoNewline
+        Write-Host " ($why running) - " -NoNewline
+        Write-Host "udgh -Force" -ForegroundColor Cyan -NoNewline
+        Write-Host " to update anyway"
+        return
+    }
 
     Write-Host "gh extensions: " -NoNewline
     Write-Host "upgrading all..." -ForegroundColor Cyan
@@ -184,7 +257,22 @@ function Update-GhExtensions {
 }
 
 function Update-CopilotPlugins {
+    [CmdletBinding()]
+    param([switch]$Force)
+
     if (-not (Get-Command copilot -ErrorAction SilentlyContinue)) { return }
+
+    # Always guarded, because the marketplace fetch reads a git cache shared with every
+    # other live Copilot instance (see Get-CopilotProcess).
+    $why = ''
+    if ((Test-CopilotBusy -Reason ([ref]$why)) -and -not $Force) {
+        Write-Host "copilot plugins: " -NoNewline
+        Write-Host "skipped" -ForegroundColor DarkYellow -NoNewline
+        Write-Host " ($why running) - " -NoNewline
+        Write-Host "udcp -Force" -ForegroundColor Cyan -NoNewline
+        Write-Host " to update anyway"
+        return
+    }
 
     Write-Host "copilot plugins: " -NoNewline
     Write-Host "updating all..." -ForegroundColor Cyan
@@ -681,6 +769,7 @@ $aliasMap = [ordered]@{
 
     # Updates
     'ccu'                 = 'Check-CopilotUpdates'
+    'gcop'                = 'Get-CopilotProcess'
     'udgh'                = 'Update-GhExtensions'
     'udcp'                = 'Update-CopilotPlugins'
     'upql'                = 'Upgrade-CodeQL'
@@ -713,8 +802,9 @@ $functions = @(
     @{ Alias = "smin";    Name = "Set-MonitorInput";             Desc = "Set one monitor's input, e.g. smin -Role Right -Source HDMI" }
     @{ Alias = "";        Name = "Start-DeskFollow";             Desc = "Claim this machine's monitors when you type here (Register-DeskFollow = at logon)" }
     @{ Alias = "ccu";     Name = "Check-CopilotUpdates";         Desc = "Check for Copilot CLI updates" }
-    @{ Alias = "udgh";    Name = "Update-GhExtensions";          Desc = "Update gh CLI extensions" }
-    @{ Alias = "udcp";    Name = "Update-CopilotPlugins";        Desc = "Update Copilot CLI plugins" }
+    @{ Alias = "gcop";    Name = "Get-CopilotProcess";           Desc = "Copilot CLI/app instances holding the shared plugin git cache" }
+    @{ Alias = "udgh";    Name = "Update-GhExtensions";          Desc = "Update gh CLI extensions (skipped while Copilot runs; -Force)" }
+    @{ Alias = "udcp";    Name = "Update-CopilotPlugins";        Desc = "Update Copilot CLI plugins (skipped while Copilot runs; -Force)" }
     @{ Alias = "upql";    Name = "Upgrade-CodeQL";               Desc = "Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref" }
 )
 foreach ($f in $functions) {
