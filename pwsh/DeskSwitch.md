@@ -69,6 +69,21 @@ Two implementation details that matter:
   match, so no DDC traffic is generated and nothing flickers. Work happens only on the
   transition.
 
+### Verified: DDC answers on an inactive cable
+
+The return path depends on the main PC commanding a monitor whose DP cable is *not* the
+active input. Some monitors only answer DDC on the input they are currently showing,
+which would let a machine give a monitor away but never take it back.
+
+Measured on this desk: the right P2725D was switched to HDMI, and while it was showing
+HDMI the main PC could still **read** it over the inactive DP cable (`0x11`) and switch
+it straight back to DP on the first attempt. So reclaiming works here.
+
+If a future monitor does not behave this way, the fix is to invert the release: have the
+machine that is *leaving* hand the monitor back while its own input is still active
+(e.g. the Mac sets the right monitor to DP once it has been idle for a while), rather
+than the returning machine reclaiming it.
+
 ## Windows setup (main and personal)
 
 Both Windows machines run the same module. The profile map decides what each claims:
@@ -151,6 +166,6 @@ and on the Mac use `set input 27`. No code changes.
 | Symptom | Cause |
 |---|---|
 | `No DDC-capable monitor in the 'X' position` | Monitor asleep or on an input whose cable is unplugged. DDC only answers on a connected cable. |
-| A monitor never switches back | Some monitors only answer DDC on the **active** input. Use the monitor's OSD to return it once, then prefer having the machine that owns an input assert it itself. |
+| A monitor never switches back | Some monitors only answer DDC on the **active** input (not the case on these P2725Ds, which were tested). Use the monitor's OSD to return it once, then invert the release so the machine leaving hands the monitor back while its own input is still active. |
 | Inputs flip back and forth | Two machines both claim the same monitor. Check the profile map: each monitor should be claimed by exactly one machine per Easy-Switch position. |
 | Nothing happens after docking | Roles are resolved at call time from screen X. If Windows has not finished re-arranging displays, re-run. |

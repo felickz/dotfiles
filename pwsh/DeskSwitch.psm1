@@ -236,11 +236,24 @@ function Get-DeskMonitor {
 }
 
 function Close-DeskMonitorHandle {
-    # dxva2 handles must be released or the monitor eventually stops answering DDC.
-    param($HandleSets)
+    <#
+    .SYNOPSIS
+    Releases physical monitor handles returned by Get-DeskMonitor.
+    .DESCRIPTION
+    dxva2 handles must be released or the monitor eventually stops answering DDC. Callers
+    that use Get-DeskMonitor directly must call this when finished; the higher-level
+    functions already do so in a finally block.
+
+    Defaults to the handle set from the most recent Get-DeskMonitor call, so the usual
+    usage is simply "Close-DeskMonitorHandle" with no arguments.
+    #>
+    [CmdletBinding()]
+    param($HandleSets = $script:LastHandleSets)
+
     foreach ($set in @($HandleSets)) {
         if ($set) { [void][DeskSwitch.Native]::DestroyPhysicalMonitors($set.Count, $set) }
     }
+    $script:LastHandleSets = @()
 }
 
 function Get-MonitorInput {
@@ -499,5 +512,5 @@ Set-Alias -Name smin   -Value Set-MonitorInput   -Force
 
 Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskProfile,
     Test-DeskProfileApplied, Start-DeskFollow, Register-DeskFollow, Unregister-DeskFollow,
-    Get-DeskMonitor, ConvertTo-DeskInputCode, ConvertFrom-DeskInputCode `
+    Get-DeskMonitor, Close-DeskMonitorHandle, ConvertTo-DeskInputCode, ConvertFrom-DeskInputCode `
     -Alias swdesk, gmin, smin
