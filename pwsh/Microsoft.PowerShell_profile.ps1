@@ -371,216 +371,34 @@ Get-Content -Path $log
     Write-Host "Results will be written to $env:TEMP\restart-monitors.log" -ForegroundColor DarkGray
 }
 
-function Get-ExternalCamera {
-    <#
-    .SYNOPSIS
-    Lists camera devices that are not built into this machine.
-    .DESCRIPTION
-    Windows assigns every device built into the chassis the well-known "system container"
-    ID {00000000-0000-0000-FFFF-FFFFFFFFFFFF}. Anything plugged in gets its own container
-    GUID, so comparing against that constant reliably separates the laptop's own webcam
-    from dock/monitor-mounted ones - without hardcoding vendor IDs.
-
-    Matching on manufacturer would not work here: the iContact Camera Pro reports its
-    Manufacturer as "Microsoft", identical to the built-in Surface camera.
-
-    Covers both the Camera and Image device classes, since UVC webcams register under
-    either one depending on their driver.
-    #>
-    [CmdletBinding()]
-    param()
-
-    $systemContainer = '{00000000-0000-0000-FFFF-FFFFFFFFFFFF}'
-
-    Get-PnpDevice -Class Camera, Image -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
-        # Read ContainerID straight from the device's Enum key. Get-PnpDeviceProperty
-        # yields the identical value but fires a separate CIM query per device, which
-        # measured ~25s for five cameras against ~0.1s here - and this runs twice per
-        # toggle. Fall back to the CIM call only if the registry read fails, since a
-        # few Enum keys carry restrictive ACLs.
-        $container = Get-ItemPropertyValue -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Enum\$($_.InstanceId)" -Name 'ContainerID' -ErrorAction SilentlyContinue
-        if (-not $container) {
-            $container = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_ContainerId' -ErrorAction SilentlyContinue).Data
-        }
-        $container -and $container -ne $systemContainer
-    }
+# ─── DeskSwitch (v2): monitor input switching across three machines ───────
+# Module lives beside this profile in the dotfiles repo. $PROFILE is a symlink and
+# $PSScriptRoot resolves to the LINK's directory, not the repo, so follow the link to
+# find it; fall back to the literal repo path.
+$deskModule = $null
+foreach ($candidate in @(
+        (Join-Path $PSScriptRoot 'DeskSwitch.psm1'),
+        $(if ($PSCommandPath) {
+              $t = (Get-Item $PSCommandPath -Force -ErrorAction SilentlyContinue).Target
+              if ($t) { Join-Path (Split-Path $t -Parent) 'DeskSwitch.psm1' }
+          }),
+        'D:\repos\felickz\dotfiles\pwsh\DeskSwitch.psm1'
+    )) {
+    if ($candidate -and (Test-Path $candidate)) { $deskModule = $candidate; break }
 }
+if ($deskModule) { Import-Module $deskModule -Force -DisableNameChecking }
 
-# Phone-as-webcam / other virtual cameras (e.g. the Pixel showing up via Phone Link).
-# Windows ships no policy or registry switch that disables just the connected camera -
-# the only documented control is Settings > Bluetooth & devices > Mobile devices >
-# [your phone] > "Use as a connected camera". Set this to $true if that toggle will not
-# stick, and swmon will keep virtual cameras disabled in BOTH monitor modes. Left $false
-# by default so Phone Link (notifications, messages, calls) is untouched out of the box.
-$Global:SwmonDisableVirtualCameras = $false
-
-function Get-VirtualCamera {
-    <#
-    .SYNOPSIS
-    Lists software/virtual camera devices, such as a phone exposed as a webcam.
-    .DESCRIPTION
-    These are not physical cameras, so they do not carry a real device container and are
-    invisible to Get-ExternalCamera. They register under SWD\VCAMDEVAPI, which is matched
-    here deliberately narrowly: sibling software nodes like SWD\SGDEVAPI (Surface Camera
-    Sensor Group) and SWD\DRIVERENUM (Windows Studio Effects) back the built-in camera and
-    must be left alone.
-    #>
-    [CmdletBinding()]
-    param()
-
-    Get-PnpDevice -Class SoftwareDevice -PresentOnly -ErrorAction SilentlyContinue |
-        Where-Object { $_.InstanceId -like 'SWD\VCAMDEVAPI\*' }
-}
-
-function Set-ExternalCameraState {
-    <#
-    .SYNOPSIS
-    Enables or disables every external (non-built-in) camera.
-    .DESCRIPTION
-    Toggling PnP devices needs admin, so this elevates via UAC - but only when there is
-    actually something to change, so a no-op never prompts.
-
-    When disabling, the instance IDs are recorded to a state file; re-enabling touches
-    only those, so a camera you deliberately disabled yourself stays disabled. If the
-    state file is missing, it falls back to re-enabling all disabled external cameras.
-
-    Only the camera/video interfaces are touched. A composite webcam's microphone
-    interface is left alone so disabling the video does not also kill its mic.
-    .PARAMETER State
-    Enabled or Disabled.
-    .PARAMETER Quiet
-    Suppress the informational output.
-    .EXAMPLE
-    Set-ExternalCameraState -State Disabled
-    #>
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Enabled', 'Disabled')]
-        [string]$State,
-
-        [switch]$IncludeVirtual,
-
-        [switch]$Quiet
-    )
-
-    $stateFile = Join-Path $env:LOCALAPPDATA 'switch-monitorsetup-cameras.json'
-    $cameras = @(Get-ExternalCamera)
-    $virtual = if ($IncludeVirtual) { @(Get-VirtualCamera) } else { @() }
-
-    if (-not $cameras -and -not $virtual) {
-        if (-not $Quiet) { Write-Host "  No external cameras detected." -ForegroundColor DarkGray }
-        return
-    }
-
-    # Physical external cameras follow the requested state.
-    if ($State -eq 'Disabled') {
-        $toDisable = @($cameras | Where-Object { $_.Status -eq 'OK' })
-        $toEnable = @()
-    }
-    else {
-        $remembered = if (Test-Path $stateFile) {
-            @(Get-Content $stateFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json)
-        }
-        else { @() }
-
-        $toEnable = if ($remembered) {
-            @($cameras | Where-Object { $_.InstanceId -in $remembered -and $_.Status -ne 'OK' })
-        }
-        else {
-            @($cameras | Where-Object { $_.Status -ne 'OK' })
-        }
-        $toDisable = @()
-    }
-
-    # Virtual cameras are never re-enabled - they stay off in both modes, which is the
-    # whole point of the opt-in. They are also kept out of the state file so the enable
-    # path can never resurrect them.
-    $toDisable += @($virtual | Where-Object { $_.Status -eq 'OK' })
-
-    if (-not $toDisable -and -not $toEnable) {
-        if (-not $Quiet) { Write-Host "  External cameras already $($State.ToLower())." -ForegroundColor DarkGray }
-        if ($State -eq 'Enabled') { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
-        return
-    }
-
-    $names = (@($toDisable) + @($toEnable) | ForEach-Object { $_.FriendlyName } | Select-Object -Unique) -join ', '
-    if (-not $PSCmdlet.ShouldProcess($names, "Set external camera state to $State")) { return }
-
-    if ($State -eq 'Disabled' -and $cameras) {
-        @($cameras | Where-Object { $_.Status -eq 'OK' }).InstanceId |
-            ConvertTo-Json -Depth 3 | Set-Content -Path $stateFile -Encoding utf8
-    }
-
-    $asLiteral = {
-        param($items)
-        if (-not $items) { return '@()' }
-        '@(' + (($items.InstanceId | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ',') + ')'
-    }
-
-    $payload = @'
-$ErrorActionPreference = 'Continue'
-$log = Join-Path $env:TEMP 'switch-monitorsetup-cameras.log'
-"Camera change: $(Get-Date -Format o)" | Set-Content -Path $log
-foreach ($id in __DISABLE__) {
-    try {
-        Disable-PnpDevice -InstanceId $id -Confirm:$false -ErrorAction Stop
-        "DISABLED $id" | Add-Content -Path $log
-    }
-    catch {
-        "FAIL-DISABLE $id :: $($_.Exception.Message)" | Add-Content -Path $log
-    }
-}
-foreach ($id in __ENABLE__) {
-    try {
-        Enable-PnpDevice -InstanceId $id -Confirm:$false -ErrorAction Stop
-        "ENABLED  $id" | Add-Content -Path $log
-    }
-    catch {
-        "FAIL-ENABLE $id :: $($_.Exception.Message)" | Add-Content -Path $log
-    }
-}
-'@
-    $payload = $payload.Replace('__DISABLE__', (& $asLiteral $toDisable)).Replace('__ENABLE__', (& $asLiteral $toEnable))
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
-
-    $count = @($toDisable).Count + @($toEnable).Count
-    Write-Host "  UAC prompt sent - approve to update $count camera interface(s): $names" -ForegroundColor Yellow
-
-    # Windows PowerShell rather than pwsh: the PnpDevice module is native there, so it
-    # avoids the slower/flakier WinPS compatibility shim in PowerShell 7.
-    $proc = Start-Process powershell.exe -Verb RunAs -Wait -PassThru `
-        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
-
-    if ($proc.ExitCode -ne 0) {
-        Write-Warning "Camera change did not complete (exit code $($proc.ExitCode)). See $env:TEMP\switch-monitorsetup-cameras.log"
-        return
-    }
-
-    $stillOn = @(Get-ExternalCamera | Where-Object { $_.Status -eq 'OK' })
-    $virtualOn = @(Get-VirtualCamera | Where-Object { $_.Status -eq 'OK' })
-
-    if ($State -eq 'Disabled') {
-        if ($stillOn) {
-            Write-Warning "Still enabled: $(($stillOn.FriendlyName | Select-Object -Unique) -join ', '). A camera in use by an app can refuse to disable."
-        }
-        else {
-            Write-Host "  External cameras disabled - laptop camera only." -ForegroundColor Green
-        }
-    }
-    else {
-        Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-        Write-Host "  External cameras re-enabled ($($stillOn.Count) interface(s) live)." -ForegroundColor Green
-    }
-
-    if ($IncludeVirtual) {
-        if ($virtualOn) {
-            Write-Warning "Virtual camera still present: $(($virtualOn.FriendlyName | Select-Object -Unique) -join ', '). Windows can re-register it; turn it off at Settings > Bluetooth & devices > Mobile devices."
-        }
-        else {
-            Write-Host "  Virtual cameras disabled." -ForegroundColor Green
-        }
-    }
+# Which monitor inputs each machine claims, keyed by desk position (left/center/right is
+# resolved from actual screen X, not display index - Windows renumbers those, and two of
+# the monitors are the same model).
+#
+# Moving a machine to a different monitor, or switching the side panels to USB-C after
+# upgrading them to P2725DE, is an edit to this map only. Run "gmin -Detailed" to see
+# which inputs each monitor actually advertises.
+$Global:DeskProfiles = [ordered]@{
+    main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
+    mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'HDMI' } }
+    personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'HDMI' } }
 }
 
 function Switch-MonitorSetup {
@@ -597,30 +415,20 @@ function Switch-MonitorSetup {
     With no arguments it toggles: more than one active display collapses to the laptop
     panel, otherwise it extends across everything currently connected.
 
-    External cameras follow the displays. Dropping to laptop-only disables every camera
-    that is not built into the chassis, so the laptop webcam is the only one left - no
-    more dock-mounted camera pointing up at you from desk height. Extending back
-    re-enables them. That part needs admin, so it raises a UAC prompt, but only when
-    there is actually a camera to change. Use -SkipCameras to leave cameras alone.
-
-    Virtual cameras (phone-as-webcam) are separate: set $SwmonDisableVirtualCameras = $true
-    and they are disabled in BOTH modes, never re-enabled.
+    This switches the Windows display TOPOLOGY (which panels are lit). To switch which
+    machine a monitor is showing, see Switch-DeskProfile / swdesk.
     .PARAMETER Mode
     Toggle (default) flips to the opposite of the current state.
     Laptop forces internal-display-only. All forces extend across every connected display.
     .PARAMETER TimeoutSeconds
     How long to wait for displays to settle before reporting. DisplayLink dock monitors are
     the slow ones. Default 15.
-    .PARAMETER SkipCameras
-    Switch displays only; do not touch external cameras (and never prompt for UAC).
     .EXAMPLE
     Switch-MonitorSetup
     .EXAMPLE
     Switch-MonitorSetup -Mode Laptop
     .EXAMPLE
     swmon -Mode All
-    .EXAMPLE
-    swmon -SkipCameras
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -628,9 +436,7 @@ function Switch-MonitorSetup {
         [string]$Mode = 'Toggle',
 
         [ValidateRange(0, 120)]
-        [int]$TimeoutSeconds = 15,
-
-        [switch]$SkipCameras
+        [int]$TimeoutSeconds = 15
     )
 
     if (-not ('Native.DisplayConfig' -as [type])) {
@@ -696,13 +502,6 @@ public static extern int SetDisplayConfig(uint numPathArrayElements, IntPtr path
     }
     else {
         Write-Warning "Asked for '$label' but $now display(s) are active after ${TimeoutSeconds}s. DisplayLink screens can lag - re-run, or use Restart-Monitors if they stay dark."
-    }
-
-    # Cameras after the displays, so any UAC prompt lands on a screen that stays on.
-    if (-not $SkipCameras) {
-        Set-ExternalCameraState `
-            -State $(if ($target -eq 'Laptop') { 'Disabled' } else { 'Enabled' }) `
-            -IncludeVirtual:$Global:SwmonDisableVirtualCameras
     }
 }
 
@@ -870,13 +669,10 @@ Import-Module -Name Microsoft.WinGet.CommandNotFound
 # Get-* is g*, Set-* is s*, matching swmon for Switch-MonitorSetup.
 # All were checked against Get-Command for collisions before being added.
 $aliasMap = [ordered]@{
-    # Monitors + cameras
+    # Monitors
     'swmon'               = 'Switch-MonitorSetup'
     'Switch-Monitor-Setup' = 'Switch-MonitorSetup'
     'rtmon'               = 'Restart-Monitors'
-    'gcam'                = 'Get-ExternalCamera'
-    'gvcam'               = 'Get-VirtualCamera'
-    'scam'                = 'Set-ExternalCameraState'
 
     # Copilot CLI wrappers
     'cpall'               = 'copilot-all'
@@ -911,10 +707,11 @@ $functions = @(
     @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
     @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
-    @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle 4-monitor extend <-> laptop screen only + external cams" }
-    @{ Alias = "scam";    Name = "Set-ExternalCameraState";      Desc = "Enable/disable all non-built-in cameras (admin)" }
-    @{ Alias = "gcam";    Name = "Get-ExternalCamera";           Desc = "List non-built-in cameras" }
-    @{ Alias = "gvcam";   Name = "Get-VirtualCamera";            Desc = "List virtual cameras (phone-as-webcam); see `$SwmonDisableVirtualCameras" }
+    @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle multi-monitor extend <-> laptop screen only" }
+    @{ Alias = "swdesk";  Name = "Switch-DeskProfile";           Desc = "Point monitors at a machine: swdesk main | mac | personal" }
+    @{ Alias = "gmin";    Name = "Get-MonitorInput";             Desc = "Show each monitor's role, current input (-Detailed = supported inputs)" }
+    @{ Alias = "smin";    Name = "Set-MonitorInput";             Desc = "Set one monitor's input, e.g. smin -Role Right -Source HDMI" }
+    @{ Alias = "";        Name = "Start-DeskFollow";             Desc = "Claim this machine's monitors when you type here (Register-DeskFollow = at logon)" }
     @{ Alias = "ccu";     Name = "Check-CopilotUpdates";         Desc = "Check for Copilot CLI updates" }
     @{ Alias = "udgh";    Name = "Update-GhExtensions";          Desc = "Update gh CLI extensions" }
     @{ Alias = "udcp";    Name = "Update-CopilotPlugins";        Desc = "Update Copilot CLI plugins" }
