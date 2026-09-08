@@ -223,12 +223,103 @@ function copilot-depcheck {
         @args
 }
 
+function Test-ExplorerSpin {
+    <#
+    .SYNOPSIS
+    Detects the wedged shell task scheduler that freezes the taskbar clock.
+    .DESCRIPTION
+    Explorer is NOT deadlocked when this happens - its message pump answers WM_NULL
+    in ~7ms and no critical sections are contended. Instead ~9 threadpool threads spin
+    in windows_storage!CShellTaskScheduler::TT_TransitionThreadToRunningOrTerminating,
+    starving the CTray taskbar thread of CPU so the clock never repaints.
+    So: sustained CPU burn is the signal, "Not Responding" is not.
+    #>
+    $p = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $p) { return $false }
+    $before = $p.TotalProcessorTime.TotalSeconds
+    Start-Sleep -Seconds 3
+    $p.Refresh()
+    $burn = ($p.TotalProcessorTime.TotalSeconds - $before) / 3   # cores consumed
+    Write-Host ("explorer pid {0}  {1:P0} of a core  {2} threads" -f $p.Id, $burn, $p.Threads.Count) -ForegroundColor DarkGray
+    return ($burn -gt 0.30)   # idle explorer is ~0%; wedged sits near or above a full core
+}
+
 function Restart-Explorer {
-    Stop-Process -Name explorer -Force
-    Stop-Process -Name itype -Force -ErrorAction SilentlyContinue
-    Start-Process explorer.exe
-    Start-Process itype.exe
-    Write-Host "Explorer and itype restarted!" -ForegroundColor Green
+    <#
+    .SYNOPSIS
+    Restarts Explorer to recover the frozen taskbar clock after a sleep/resume.
+    .NOTES
+    History (2026-08-27, confirmed from full-memory dumps + WPR trace):
+
+    Two INDEPENDENT bugs, both triggered by Modern Standby resume (Kernel-Power 507):
+
+    1. itype.exe (Mouse and Keyboard Center v14.41, built 2021) - the KEYBOARD component.
+       Its UI thread wedges re-dispatching private message 0x5F6 (119s CPU, 97s kernel).
+       Because it owns a WH_KEYBOARD_LL hook - which runs on the INSTALLING thread -
+       every keystroke system-wide blocks on that saturated thread up to
+       LowLevelHooksTimeout (300ms default). That is the typing lag, and why killing
+       itype fixes it instantly: the chokepoint just disappears.
+       FIXED: launch tasks disabled (see Enable-IType below to reverse).
+       Do NOT relaunch itype here - that reintroduces the hook. The old version of this
+       function also called `Start-Process itype.exe`, which threw anyway (not on PATH).
+
+    2. explorer.exe - shell task scheduler spins (see Test-ExplorerSpin). Still unfixed
+       upstream; restarting Explorer is the only recovery. Only ever observed after #1.
+       Repro evidence lives in C:\traces\ - keep it until the OS bug is resolved.
+    #>
+    [CmdletBinding()]
+    param(
+        # Skip the "is it actually wedged?" check and restart unconditionally.
+        [switch]$Force
+    )
+
+    if (-not $Force -and -not (Test-ExplorerSpin)) {
+        Write-Host "Explorer looks healthy - not restarting. Use -Force to override." -ForegroundColor Yellow
+        return
+    }
+
+    $old = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+    $oldId = if ($old) { $old.Id } else { 0 }
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+
+    # Windows normally respawns the shell on its own; only start it if it doesn't come
+    # back. Unconditionally calling Start-Process here races that and can leave you with
+    # a stray File Explorer window instead of a shell. Match on a NEW pid - the dying
+    # process lingers briefly and will otherwise be mistaken for the replacement.
+    $shell = $null
+    for ($i = 0; $i -lt 20 -and -not $shell; $i++) {
+        Start-Sleep -Milliseconds 500
+        $shell = Get-Process explorer -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Id -ne $oldId } | Select-Object -First 1
+    }
+    if (-not $shell) {
+        Start-Process explorer.exe
+        for ($i = 0; $i -lt 10 -and -not $shell; $i++) {
+            Start-Sleep -Milliseconds 500
+            $shell = Get-Process explorer -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Id -ne $oldId } | Select-Object -First 1
+        }
+    }
+
+    if ($shell) { Write-Host "Explorer restarted (pid $($shell.Id)) - clock should tick again." -ForegroundColor Green }
+    else        { Write-Warning "Explorer did not come back. Start it from Task Manager > Run new task > explorer.exe" }
+}
+
+function Enable-IType {
+    <#
+    .SYNOPSIS
+    Re-enables itype.exe autostart. Only needed if you attach a Microsoft KEYBOARD.
+    .DESCRIPTION
+    The Arc Touch BT Mouse is driven by ipoint.exe, which is untouched - so unless a
+    Microsoft keyboard shows up, leaving itype disabled costs nothing. Requires admin.
+    Also useful to reproduce the resume bug on demand for the OS team.
+    #>
+    Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile', '-Command', @'
+schtasks /Change /TN "Microsoft_MKC_Logon_Task_itype.exe" /ENABLE
+schtasks /Change /TN "Microsoft_Hardware_Launch_itype_exe" /ENABLE
+Write-Host "itype tasks re-enabled. Sign out/in or run itype.exe to start it."
+pause
+'@
 }
 
 function Restart-Monitors {
