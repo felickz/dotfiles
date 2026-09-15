@@ -14,19 +14,22 @@ gmin -Detailed    # what each monitor is on, and what it supports
 |---|---|---|---|
 | Left | Dell P2725D | DP, HDMI | main on DP, personal Surface on HDMI |
 | Center | Dell P3425WE (34" UW) | **USB-C**, DP, HDMI | main only |
-| Right | Dell P2725D | DP, HDMI | main on DP, Mac on HDMI |
+| Right | Dell P2725DE | DP, HDMI, **USB-C** | main on DP, Mac on USB-C |
 | Below | Surface Laptop Studio 2 panel | *(no DDC/CI)* | main |
 
 | Easy-Switch | Machine | Hostname | Result |
 |---|---|---|---|
 | 1 | Surface Laptop Studio 2 | `SURFACESTUDIO2` | all three monitors on DP |
-| 2 | Mac M5 Pro | `H17MX7TXMT` | right monitor to HDMI |
+| 2 | Mac M5 Pro | `H17MX7TXMT` | right monitor to USB-C |
 | 3 | Surface Laptop 5 | `SURFACE-LAPTOP5` | left monitor to HDMI |
 
 ## Why the Easy-Switch key is not the trigger
 
 The obvious design is "detect the Easy-Switch press and switch inputs." That is not
-possible on the machine you are leaving, and this was measured rather than assumed:
+possible on the machine you are leaving, on Windows or macOS. The Easy-Switch buttons
+are consumed by the Logitech device firmware to change its radio connection; they are
+not delivered to the host as normal key events. On Windows this was also measured
+rather than assumed:
 
 - The keyboard connects through a **Logi Bolt receiver** (`VID_046D&PID_C548`). The
   receiver presents a **fixed** set of HID endpoints (`MI_00`–`MI_03`). Pressing
@@ -42,6 +45,11 @@ possible on the machine you are leaving, and this was measured rather than assum
 So DeskSwitch inverts it. **No machine detects the key. Each machine claims the inputs
 it owns when it sees local user input.** Press Easy-Switch, start typing, and that
 machine takes its monitors. Nothing is networked, paired or synchronised.
+
+DDPM's input-source hotkey is useful, but it cannot bind the firmware-only Easy-Switch
+buttons either. It can bind an ordinary keyboard shortcut, and Logi Options+ can map a
+normal remappable mouse button to that shortcut. The three MX Keys device-selection
+buttons and a mouse's underside Easy-Switch button cannot be used as the trigger.
 
 This also means the return path is automatic: come back to the main PC, type, and it
 pulls all three monitors back to DP.
@@ -91,7 +99,7 @@ Both Windows machines run the same module. The profile map decides what each cla
 ```powershell
 $Global:DeskProfiles = [ordered]@{
     main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
-    mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'HDMI' } }
+    mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
     personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'HDMI' } }
 }
 ```
@@ -110,37 +118,39 @@ resolves `personal` from its own hostname and claims only the left monitor.
 
 ## macOS setup (Mac M5 Pro)
 
-macOS has no DDC/CI API of its own, so use [`m1ddc`](https://github.com/waydabber/m1ddc):
+The installed Dell Display and Peripheral Manager 2.3 CLI can control the P2725DE:
 
 ```bash
-brew install m1ddc
-m1ddc display list                 # find the right monitor's id
-m1ddc display 1 set input 17       # 17 = HDMI 1, the same 0x11 used on Windows
+/Applications/DDPM/DDPM.app/Contents/MacOS/DDPM \
+  /get -Display=ActiveInputSource -Index=1
+/Applications/DDPM/DDPM.app/Contents/MacOS/DDPM \
+  /set -Display=ActiveInputSource -Index=1 -value=DP
 ```
 
-Wrap it so the Mac claims the right monitor when you are actually using the Mac. The
-equivalent of `GetLastInputInfo` is `CGEventSourceSecondsSinceLastEventType`:
+DDPM also offers this through its **Input Source > Hotkey** UI. The CLI is preferable
+for dotfiles because the command, aliases, display index, and source names can all be
+reviewed and version controlled instead of living only in DDPM's local preferences.
+
+The repository wraps this in a simpler, version-controlled setup:
 
 ```bash
-#!/bin/bash
-# deskfollow.sh - claim the right monitor whenever this Mac is being used.
-DISPLAY_ID=1
-HDMI=17
-while true; do
-  idle=$(ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}')
-  if [ "$idle" -le 3 ]; then
-    current=$(m1ddc display $DISPLAY_ID get input 2>/dev/null)
-    [ "$current" != "$HDMI" ] && m1ddc display $DISPLAY_ID set input $HDMI
-  fi
-  sleep 2
-done
+./install-macos.sh
+desk-monitor list
+desk-monitor status
+desk-pc            # input 15: DisplayPort 1, connected to the main Windows PC
+desk-mac           # input 27: USB-C, connected to this Mac
 ```
 
-Run it from a `launchd` agent at login. The `current != target` check is the same guard
-used on Windows, and it is what stops the two machines fighting over the monitor.
+The installer links the command into `~/.local/bin` and links the repository's
+`.zshrc` to `~/.zshrc`; the implementation and configuration remain in this
+repository and are therefore version controlled. If DDPM is absent, the wrapper can fall back to
+[`m1ddc`](https://github.com/waydabber/m1ddc). Manual commands are intentional.
+Automatically claiming USB-C on any Mac input can steal the screen when the built-in
+keyboard or trackpad is touched while the Logitech devices are still assigned to
+Windows.
 
-> If the Mac is not Apple Silicon, or `m1ddc` cannot see the display, BetterDisplay
-> exposes the same DDC controls with a CLI.
+> DDPM supports this P2725DE on Apple Silicon. BetterDisplay exposes similar CLI
+> controls if neither DDPM nor `m1ddc` can see a future display.
 
 ## Upgrading the side monitors to USB-C (P2725DE)
 
@@ -159,7 +169,7 @@ mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USB
 personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'USBC' } }
 ```
 
-and on the Mac use `set input 27`. No code changes.
+The checked-in Mac configuration already uses input `27`.
 
 ## Troubleshooting
 

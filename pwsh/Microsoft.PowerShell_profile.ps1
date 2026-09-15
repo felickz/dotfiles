@@ -485,7 +485,7 @@ if ($deskModule) { Import-Module $deskModule -Force -DisableNameChecking }
 # which inputs each monitor actually advertises.
 $Global:DeskProfiles = [ordered]@{
     main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
-    mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'HDMI' } }
+    mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
     personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'HDMI' } }
 }
 

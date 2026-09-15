@@ -1,0 +1,125 @@
+#!/bin/sh
+
+set -eu
+
+config_file=${DESK_MONITOR_CONFIG:-"$HOME/.config/dotfiles/macos/desk-monitor.conf"}
+if [ -r "$config_file" ]; then
+    # This file is part of the user's dotfiles and contains only shell assignments.
+    . "$config_file"
+fi
+
+: "${DESK_MONITOR_BACKEND:=auto}"
+: "${DESK_MONITOR_DISPLAY:=1}"
+: "${DESK_MONITOR_MAC_SOURCE:=USB-C}"
+: "${DESK_MONITOR_PC_SOURCE:=DP}"
+: "${DESK_MONITOR_MAC_INPUT:=27}"
+: "${DESK_MONITOR_PC_INPUT:=15}"
+: "${DDPM_BIN:=/Applications/DDPM/DDPM.app/Contents/MacOS/DDPM}"
+
+usage() {
+    cat <<'EOF'
+Usage: desk-monitor <mac|pc|status|list>
+
+  mac     Switch the configured display to USB-C
+  pc      Switch the configured display to DisplayPort
+  status  Show the configured display's active input
+  list    List displays detected by the selected backend
+
+Configuration:
+  ~/.config/dotfiles/macos/desk-monitor.conf
+EOF
+}
+
+select_backend() {
+    case $DESK_MONITOR_BACKEND in
+        auto)
+            if [ -x "$DDPM_BIN" ]; then
+                backend=ddpm
+            elif command -v m1ddc >/dev/null 2>&1; then
+                backend=m1ddc
+            else
+                printf '%s\n' \
+                    "desk-monitor: neither DDPM nor m1ddc was found." \
+                    "Install Dell Display and Peripheral Manager, or run: brew install m1ddc" >&2
+                exit 127
+            fi
+            ;;
+        ddpm)
+            [ -x "$DDPM_BIN" ] || {
+                printf 'desk-monitor: DDPM CLI not found at %s\n' "$DDPM_BIN" >&2
+                exit 127
+            }
+            backend=ddpm
+            ;;
+        m1ddc)
+            command -v m1ddc >/dev/null 2>&1 || {
+                printf '%s\n' "desk-monitor: m1ddc is not installed." >&2
+                exit 127
+            }
+            backend=m1ddc
+            ;;
+        *)
+            printf 'desk-monitor: unknown backend: %s\n' "$DESK_MONITOR_BACKEND" >&2
+            exit 2
+            ;;
+    esac
+}
+
+run_ddpm() {
+    output=$("$DDPM_BIN" "$@")
+    printf '%s\n' "$output"
+    printf '%s\n' "$output" | grep -q '"Result": "PASS"'
+}
+
+set_input() {
+    source_name=$1
+    input_code=$2
+
+    case $input_code in
+        ''|*[!0-9]*)
+            printf 'desk-monitor: input must be a decimal MCCS value, got: %s\n' "$input_code" >&2
+            exit 2
+            ;;
+    esac
+
+    printf 'Switching display %s to %s...\n' "$DESK_MONITOR_DISPLAY" "$source_name"
+    if [ "$backend" = ddpm ]; then
+        run_ddpm /set -Display=ActiveInputSource \
+            "-Index=$DESK_MONITOR_DISPLAY" "-value=$source_name"
+    else
+        m1ddc display "$DESK_MONITOR_DISPLAY" set input "$input_code"
+    fi
+}
+
+select_backend
+
+case ${1:-} in
+    mac)
+        set_input "$DESK_MONITOR_MAC_SOURCE" "$DESK_MONITOR_MAC_INPUT"
+        ;;
+    pc)
+        set_input "$DESK_MONITOR_PC_SOURCE" "$DESK_MONITOR_PC_INPUT"
+        ;;
+    status)
+        if [ "$backend" = ddpm ]; then
+            run_ddpm /get -Display=ActiveInputSource "-Index=$DESK_MONITOR_DISPLAY"
+        else
+            printf '%s\n' "m1ddc does not support reading the active input; use 'desk-monitor list'."
+            m1ddc display list detailed
+        fi
+        ;;
+    list)
+        if [ "$backend" = ddpm ]; then
+            run_ddpm /get -Display=MonitorCount
+        else
+            m1ddc display list detailed
+        fi
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
