@@ -135,10 +135,10 @@ The repository wraps this in a simpler, version-controlled setup:
 
 ```bash
 ./install-macos.sh
-desk-monitor list
-desk-monitor status
-desk-pc            # input 15: DisplayPort 1, connected to the main Windows PC
-desk-mac           # input 27: USB-C, connected to this Mac
+swmon list
+swmon status
+swmon pc            # input 15: DisplayPort 1, connected to the main Windows PC
+swmon mac           # input 27: USB-C, connected to this Mac
 ```
 
 The installer links the command into `~/.local/bin` and links the repository's

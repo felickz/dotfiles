@@ -3,5 +3,6 @@
 
 export PATH="$HOME/.local/bin:$PATH"
 
+alias swmon='desk-monitor'
 alias desk-mac='desk-monitor mac'
 alias desk-pc='desk-monitor pc'

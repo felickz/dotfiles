@@ -32,11 +32,14 @@ Display and Peripheral Manager's CLI when DDPM is installed, with `m1ddc` as an
 optional fallback. The profile supplies:
 
 ```bash
-desk-monitor list  # identify the external display (this P2725DE is index 1)
-desk-monitor status
-desk-pc            # switch the right Dell to the Windows PC's DisplayPort
-desk-mac           # switch it back to the Mac's USB-C input
+swmon list    # identify the external display (this P2725DE is index 1)
+swmon status
+swmon pc      # switch the right Dell to the Windows PC's DisplayPort
+swmon mac     # switch it back to the Mac's USB-C input
 ```
+
+`desk-monitor` remains the underlying command, and the older `desk-pc` and
+`desk-mac` convenience aliases remain available.
 
 The default display and Dell input codes are version controlled in
 [`macos/desk-monitor.conf`](macos/desk-monitor.conf). DDPM currently identifies the
