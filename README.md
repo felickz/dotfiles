@@ -60,3 +60,17 @@ If `~/.zshrc` is already the correct symlink, no backup is needed. Verify it wit
 ```bash
 readlink "$HOME/.zshrc"
 ```
+
+## Modern Standby
+
+The profile includes a reversible sleep optimization for the Surface Laptop Studio 2 and
+Plugable UD-ULTC4K dock:
+
+```powershell
+DeepSleep On       # Disable standby networking and the unused dock audio interface
+DeepSleep Off      # Restore both settings to their original enabled values
+Get-DeepSleep      # Report the current state
+```
+`DeepSleep` requires elevation and opens a UAC prompt when needed. It does not change
+DisplayLink video, Ethernet, USB, charging, wake devices, hibernation, or PowerToys Awake.
+DisplayLink video, Ethernet, USB, charging, wake devices, hibernation, or PowerToys Awake.

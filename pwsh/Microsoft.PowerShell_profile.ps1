@@ -393,6 +393,148 @@ function Restart-Explorer {
     else        { Write-Warning "Explorer did not come back. Start it from Task Manager > Run new task > explorer.exe" }
 }
 
+function Get-DeepSleep {
+    <#
+    .SYNOPSIS
+    Reports whether the verified Modern Standby optimizations are enabled.
+    .DESCRIPTION
+    DeepSleep On means:
+      1. Network connectivity during Modern Standby is disabled on AC and battery.
+      2. The unused Plugable UD-ULTC4K 3.5 mm audio interface is disabled.
+
+    These settings fixed a Surface Laptop Studio 2 that stayed at 0% hardware and
+    software low-power residency with the dock connected. A dock-free SleepStudy
+    measured 93-99% residency. DisplayLink video, Ethernet, USB, and charging remain
+    enabled when only the Plugable Audio interface is disabled.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $networkSetting = 'F15576E8-98B7-4186-B944-EAFA664402D9'
+    $powerOutput = powercfg /qh SCHEME_CURRENT SUB_NONE $networkSetting 2>&1 | Out-String
+
+    $acValue = if ($powerOutput -match 'Current AC Power Setting Index:\s+0x([0-9a-f]+)') {
+        [Convert]::ToInt32($matches[1], 16)
+    }
+    $dcValue = if ($powerOutput -match 'Current DC Power Setting Index:\s+0x([0-9a-f]+)') {
+        [Convert]::ToInt32($matches[1], 16)
+    }
+
+    $audioDevices = @(Get-PnpDevice -Class MEDIA -ErrorAction SilentlyContinue | Where-Object {
+        $_.FriendlyName -eq 'Plugable Audio' -and
+        $_.InstanceId -like 'USB\VID_17E9&PID_6011&MI_02\*'
+    })
+    $audioStates = @($audioDevices | ForEach-Object {
+        $problemCode = (Get-PnpDeviceProperty -InstanceId $_.InstanceId `
+            -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
+        if ($problemCode -eq 22) { 'Disabled' } else { 'Enabled' }
+    } | Sort-Object -Unique)
+    $audioState = if (-not $audioDevices) { 'Not detected' }
+                  elseif ($audioStates.Count -eq 1) { $audioStates[0] }
+                  else { 'Mixed' }
+
+    $networkAc = switch ($acValue) { 0 { 'Disabled' } 1 { 'Enabled' } 2 { 'Managed' } default { 'Unknown' } }
+    $networkDc = switch ($dcValue) { 0 { 'Disabled' } 1 { 'Enabled' } 2 { 'Managed' } default { 'Unknown' } }
+    $state = if ($acValue -eq 0 -and $dcValue -eq 0 -and $audioState -eq 'Disabled') {
+        'On'
+    } elseif ($acValue -eq 1 -and $dcValue -eq 1 -and $audioState -eq 'Enabled') {
+        'Off'
+    } else {
+        'Partial'
+    }
+
+    [pscustomobject]@{
+        DeepSleep            = $state
+        StandbyNetworkOnAC   = $networkAc
+        StandbyNetworkOnDC   = $networkDc
+        PlugableAudio        = $audioState
+    }
+}
+
+function Set-DeepSleep {
+    <#
+    .SYNOPSIS
+    Enables or reverts the verified Modern Standby optimizations.
+    .PARAMETER State
+    On disables standby networking on AC/DC and disables the Plugable dock's
+    unused 3.5 mm audio interface. Off restores standby networking and Plugable Audio.
+    .EXAMPLE
+    DeepSleep On
+    .EXAMPLE
+    DeepSleep Off
+    .EXAMPLE
+    Get-DeepSleep
+    .NOTES
+    Requires elevation. If needed, the function opens one UAC prompt and performs only
+    the two changes documented above. PlatformAoAcOverride, wake devices, hibernation
+    timers, PowerToys Awake, DisplayLink video, Ethernet, USB, and charging are untouched.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [ValidateSet('On', 'Off')]
+        [string]$State
+    )
+
+    $networkValue = if ($State -eq 'On') { 0 } else { 1 }
+    $deviceVerb = if ($State -eq 'On') { 'Disable' } else { 'Enable' }
+    $description = "$deviceVerb standby networking and Plugable Audio"
+    if (-not $PSCmdlet.ShouldProcess('Windows power and Plugable dock audio settings', $description)) {
+        return
+    }
+
+    $script = @'
+$ErrorActionPreference = 'Stop'
+$state = '__STATE__'
+$networkValue = __NETWORK_VALUE__
+$networkSetting = 'F15576E8-98B7-4186-B944-EAFA664402D9'
+
+foreach ($powerSource in 'ac', 'dc') {
+    & powercfg "/set${powerSource}valueindex" SCHEME_CURRENT SUB_NONE $networkSetting $networkValue
+    if ($LASTEXITCODE -ne 0) {
+        throw "powercfg failed while updating the $powerSource standby-network setting."
+    }
+}
+& powercfg /setactive SCHEME_CURRENT
+if ($LASTEXITCODE -ne 0) { throw 'powercfg failed while reactivating the current plan.' }
+
+$audioDevices = @(Get-PnpDevice -Class MEDIA -ErrorAction SilentlyContinue | Where-Object {
+    $_.FriendlyName -eq 'Plugable Audio' -and
+    $_.InstanceId -like 'USB\VID_17E9&PID_6011&MI_02\*'
+})
+if (-not $audioDevices) {
+    Write-Warning 'No known Plugable Audio interface was found. The network setting was still updated.'
+}
+foreach ($device in $audioDevices) {
+    $problemCode = (Get-PnpDeviceProperty -InstanceId $device.InstanceId `
+        -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
+    if ($state -eq 'On' -and $problemCode -ne 22) {
+        Disable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
+    } elseif ($state -eq 'Off' -and $problemCode -eq 22) {
+        Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
+    }
+}
+
+Write-Host "DeepSleep $state applied." -ForegroundColor Green
+Write-Host 'Close this window, then run Get-DeepSleep in your normal shell to verify.' -ForegroundColor Cyan
+'@
+    $script = $script.Replace('__STATE__', $State).Replace('__NETWORK_VALUE__', [string]$networkValue)
+
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
+    if ($isAdmin) {
+        & ([scriptblock]::Create($script))
+        return
+    }
+
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile', '-NoExit', '-EncodedCommand', $encodedCommand
+    Write-Host "UAC prompt sent for DeepSleep $State." -ForegroundColor Yellow
+}
+
+Set-Alias -Name DeepSleep -Value Set-DeepSleep
+
 function Enable-IType {
     <#
     .SYNOPSIS
@@ -629,7 +771,7 @@ function Upgrade-CodeQL {
         Write-Host "Looking up requested CodeQL bundle release $bundleTag..." -ForegroundColor Cyan
         $apiUrl = "https://api.github.com/repos/github/codeql-action/releases/tags/$bundleTag"
         try {
-            $null = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'Upgrade-CodeQL' } -ErrorAction Stop
+            $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'Upgrade-CodeQL' } -ErrorAction Stop
         } catch {
             Write-Host "No release found for $bundleTag (is $cliVersion a real CodeQL CLI version?): $_" -ForegroundColor Red
             return
@@ -667,13 +809,36 @@ function Upgrade-CodeQL {
     }
 
     # 3. Download the win64 bundle
-    $downloadUrl = "https://github.com/github/codeql-action/releases/download/$bundleTag/codeql-bundle-win64.tar.gz"
-    $archive     = Join-Path $env:TEMP "codeql-bundle-win64-$cliVersionNumber.tar.gz"
-    Write-Host "Downloading $downloadUrl" -ForegroundColor Cyan
-    curl.exe -L --fail -o $archive $downloadUrl
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $archive)) {
-        Write-Host "Download failed." -ForegroundColor Red
+    $asset = $release.assets | Where-Object name -EQ "codeql-bundle-win64.tar.gz" | Select-Object -First 1
+    if (-not $asset) {
+        Write-Host "Release $bundleTag does not contain codeql-bundle-win64.tar.gz." -ForegroundColor Red
         return
+    }
+    $downloadUrl = $asset.browser_download_url
+    $expectedArchiveSize = [long]$asset.size
+    $archive     = Join-Path $env:TEMP "codeql-bundle-win64-$cliVersionNumber.tar.gz"
+
+    $archiveSize = if (Test-Path $archive) { (Get-Item $archive).Length } else { 0 }
+    if ($archiveSize -eq $expectedArchiveSize) {
+        Write-Host "Reusing downloaded bundle $archive" -ForegroundColor Green
+    } else {
+        if ($archiveSize -gt 0 -and $archiveSize -lt $expectedArchiveSize) {
+            Write-Host "Resuming partial download $archive ($archiveSize of $expectedArchiveSize bytes)..." -ForegroundColor Cyan
+            curl.exe -L --fail --continue-at - -o $archive $downloadUrl
+        } else {
+            if ($archiveSize -gt $expectedArchiveSize) {
+                Write-Host "Cached bundle has an unexpected size; downloading it again." -ForegroundColor Yellow
+                Remove-Item $archive -Force
+            }
+            Write-Host "Downloading $downloadUrl" -ForegroundColor Cyan
+            curl.exe -L --fail -o $archive $downloadUrl
+        }
+
+        $downloadedSize = if (Test-Path $archive) { (Get-Item $archive).Length } else { 0 }
+        if ($LASTEXITCODE -ne 0 -or $downloadedSize -ne $expectedArchiveSize) {
+            Write-Host "Download is incomplete ($downloadedSize of $expectedArchiveSize bytes). Re-run Upgrade-CodeQL to resume it." -ForegroundColor Red
+            return
+        }
     }
 
     # 4. Rename the current install to -old (clear any stale backup first)
@@ -686,7 +851,56 @@ function Upgrade-CodeQL {
     }
     if (Test-Path $InstallPath) {
         Write-Host "Renaming $InstallPath -> $oldPath" -ForegroundColor Cyan
-        Rename-Item -Path $InstallPath -NewName $leafOld
+        try {
+            Rename-Item -Path $InstallPath -NewName $leafOld
+        } catch {
+            $installRoot = $InstallPath.TrimEnd('\')
+            $lockingProcesses = @(
+                Get-CimInstance Win32_Process | Where-Object {
+                    ($_.ExecutablePath -and (
+                        $_.ExecutablePath.Equals($codeqlExe, [StringComparison]::OrdinalIgnoreCase) -or
+                        $_.ExecutablePath.StartsWith("$installRoot\", [StringComparison]::OrdinalIgnoreCase)
+                    )) -or
+                    ($_.CommandLine -and
+                        $_.CommandLine.IndexOf($installRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+                }
+            )
+
+            if (-not $lockingProcesses) {
+                Write-Host "Could not identify a process using $InstallPath." -ForegroundColor Red
+                Write-Host "Rename failed: $($_.Exception.Message)" -ForegroundColor Red
+                return
+            }
+
+            Write-Host "The following process(es) are using the CodeQL installation:" -ForegroundColor Yellow
+            foreach ($process in $lockingProcesses) {
+                Write-Host ""
+                Write-Host "PID:        $($process.ProcessId)" -ForegroundColor Yellow
+                Write-Host "Name:       $($process.Name)"
+                Write-Host "Executable: $($process.ExecutablePath)"
+                Write-Host "Command:    $($process.CommandLine)"
+            }
+
+            $answer = Read-Host "`nKill these process(es) and retry the upgrade? [Y/N]"
+            if ($answer -notmatch '^(?i:y|yes)$') {
+                Write-Host "Upgrade cancelled. The downloaded bundle remains cached at $archive." -ForegroundColor Yellow
+                return
+            }
+
+            foreach ($process in $lockingProcesses) {
+                Write-Host "Stopping PID $($process.ProcessId) ($($process.Name))..." -ForegroundColor Cyan
+                Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            }
+            Start-Sleep -Milliseconds 500
+
+            try {
+                Rename-Item -Path $InstallPath -NewName $leafOld
+            } catch {
+                Write-Host "Rename still failed after stopping the identified processes: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "The downloaded bundle remains cached at $archive." -ForegroundColor Yellow
+                return
+            }
+        }
     }
 
     # 5. Extract into an isolated staging dir, then move into place. The bundle
@@ -718,7 +932,7 @@ function Upgrade-CodeQL {
         Write-Host "Deleting $oldPath..." -ForegroundColor DarkGray
         Remove-Item -Recurse -Force $oldPath
     }
-    Remove-Item $archive -Force -ErrorAction SilentlyContinue
+    Write-Host "Keeping downloaded bundle cached at $archive" -ForegroundColor DarkGray
 
     # 8. Switch the ql submodule to the matching CLI ref (e.g. codeql-cli/v2.25.6)
     $ref = "codeql-cli/$cliVersion"

@@ -92,6 +92,39 @@ machine that is *leaving* hand the monitor back while its own input is still act
 (e.g. the Mac sets the right monitor to DP once it has been idle for a while), rather
 than the returning machine reclaiming it.
 
+## Known gap: the desktop still extends onto a handed-over monitor
+
+Switching a monitor's input is only half a handover. The DP link stays trained, so Windows
+keeps extending the desktop onto a screen you can no longer see: the mouse disappears into
+it and windows land there invisibly. A complete handover also has to detach the monitor
+from the Windows display config, and re-attach it on the way back.
+
+This is **not implemented yet**. What was established while trying:
+
+- **Detach works** via `ChangeDisplaySettingsEx` with a zeroed DEVMODE, and a
+  detach/re-attach round trip on a non-primary monitor restored the layout
+  byte-identically.
+- **`SDC_TOPOLOGY_EXTEND` cannot undo a detach.** Detaching also rewrites the saved
+  topology, so "extend" afterwards means "extend across whatever is still attached". Ten
+  attempts never brought the monitor back. Re-attaching needs an explicit DEVMODE.
+- **Detach wipes the saved mode.** Afterwards `EnumDisplaySettings` reports 0x0, so the
+  geometry must be captured *before* detaching or there is nothing to restore from.
+- **A detached monitor is unreachable over DDC.** It leaves the HMONITOR enumeration, so
+  there is no handle for VCP commands. That forces the ordering:
+  release = switch input, then detach; reclaim = attach, then switch input.
+- **A monitor showing a dead input also stops answering DDC**, so role lookup cannot
+  depend on DDC at handover time - the mapping has to be cached while healthy.
+- **Windows silently refuses to detach the PRIMARY display.** The call reports success and
+  nothing changes, and the subsequent re-attach fails with `DISP_CHANGE_FAILED`. Another
+  monitor has to be promoted to primary first.
+
+Practical note: repeated detach/attach cycles left the display registry unsettled, and
+DDC reads on the ultrawide became intermittent until things were switched back to
+DisplayPort. Worth doing this work against a spare monitor rather than a primary.
+
+Until it is implemented, after handing a monitor over use Win+P or Settings > Display to
+drop it from the desktop manually.
+
 ## Windows setup (main and personal)
 
 Both Windows machines run the same module. The profile map decides what each claims:
