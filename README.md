@@ -73,4 +73,18 @@ Get-DeepSleep      # Report the current state
 ```
 `DeepSleep` requires elevation and opens a UAC prompt when needed. It does not change
 DisplayLink video, Ethernet, USB, charging, wake devices, hibernation, or PowerToys Awake.
-DisplayLink video, Ethernet, USB, charging, wake devices, hibernation, or PowerToys Awake.
+
+## Cross-platform notes
+
+This repo is used from both Windows and macOS, so line endings are pinned in
+[`.gitattributes`](.gitattributes) rather than left to each machine's `core.autocrlf`:
+
+- everything is stored as **LF** in git
+- `*.ps1` / `*.psm1` / `*.bat` / `*.cmd` check out as **CRLF**, native for Windows editors
+- `*.sh`, `.zshrc` and `macos/bin/*` check out as **LF everywhere**, including on Windows
+
+That last rule is not cosmetic: a shell script stored with CRLF fails at exec time on
+macOS with `bad interpreter: /bin/sh^M: no such file or directory`.
+
+Each installer refuses to run on the wrong platform, so `install.ps1` and
+`install-macos.sh` can safely live side by side.

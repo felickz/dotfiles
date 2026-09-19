@@ -14,6 +14,15 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Mirrors the macOS guard in install-macos.sh. This installer links the Windows
+# PowerShell profile, which pulls in DeskSwitch and its user32/dxva2 P/Invokes, so it is
+# Windows-only. $IsWindows exists in PowerShell 6+; on Windows PowerShell 5.1 it is
+# undefined, and that only ever runs on Windows anyway.
+if ($PSVersionTable.PSVersion.Major -ge 6 -and -not $IsWindows) {
+    Write-Error 'install.ps1: Windows is required. On macOS run ./install-macos.sh instead.'
+    return
+}
+
 $dotfilesRoot = $PSScriptRoot
 
 # --- PowerShell Profile ---
