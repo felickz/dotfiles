@@ -294,18 +294,18 @@ function Set-MonitorInput {
     is retried rather than trusted on the first attempt; an immediate read returns 0x00 and
     would look like a failure.
     .PARAMETER Role
-    Left, Center or Right - resolved by horizontal position.
+    Left, Center or Right - resolved by horizontal position. Positional.
     .PARAMETER Source
-    DP, HDMI, USBC, or a raw code such as 0x1B.
+    DP, HDMI, USBC, or a raw code such as 0x1B. Positional.
     .EXAMPLE
-    Set-MonitorInput -Role Right -Source HDMI
+    smin Right HDMI
     .EXAMPLE
     Set-MonitorInput -Role Left,Center,Right -Source DP
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory)][ValidateSet('Left', 'Center', 'Right')][string[]]$Role,
-        [Parameter(Mandatory)][Alias('Input')][string]$Source,
+        [Parameter(Mandatory, Position = 0)][ValidateSet('Left', 'Center', 'Right')][string[]]$Role,
+        [Parameter(Mandatory, Position = 1)][Alias('Input')][string]$Source,
         [switch]$Quiet
     )
 
@@ -577,12 +577,12 @@ function Set-LaptopBrightness {
     .SYNOPSIS
     Sets the built-in laptop panel brightness.
     .PARAMETER Percent
-    0-100.
+    0-100. Positional.
     .EXAMPLE
-    Set-LaptopBrightness -Percent 40
+    Set-LaptopBrightness 40
     #>
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][ValidateRange(0, 100)][int]$Percent)
+    param([Parameter(Mandatory, Position = 0)][ValidateRange(0, 100)][int]$Percent)
 
     $methods = Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue |
         Select-Object -First 1
@@ -648,21 +648,25 @@ function Set-MonitorBrightness {
 
     A monitor showing a dead input, or one that has been detached, stops answering DDC. It
     is reported as skipped rather than treated as an error.
-    .PARAMETER Role
-    Which monitors. Defaults to every DDC-capable monitor.
     .PARAMETER Percent
-    0-100. Scaled automatically if a monitor reports a maximum other than 100.
+    0-100. Positional, so "smb 40" works. Scaled automatically if a monitor reports a
+    maximum other than 100.
+    .PARAMETER Role
+    Which monitors. Defaults to every DDC-capable monitor. Also positional, so
+    "smb 65 Center" works.
     .PARAMETER IncludeLaptop
     Also set the built-in panel.
     .EXAMPLE
-    Set-MonitorBrightness -Percent 40
+    smb 40
     .EXAMPLE
-    smb -Role Center -Percent 65
+    smb 65 Center
+    .EXAMPLE
+    Set-MonitorBrightness -Percent 40 -IncludeLaptop
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [ValidateSet('Left', 'Center', 'Right')][string[]]$Role,
-        [Parameter(Mandatory)][ValidateRange(0, 100)][int]$Percent,
+        [Parameter(Mandatory, Position = 0)][ValidateRange(0, 100)][int]$Percent,
+        [Parameter(Position = 1)][ValidateSet('Left', 'Center', 'Right')][string[]]$Role,
         [switch]$IncludeLaptop,
         [switch]$Quiet
     )
@@ -732,15 +736,16 @@ function Sync-MonitorBrightness {
     is clamped to 0-100.
     .PARAMETER Offset
     Percentage points added to the laptop value before it is applied externally.
-    Negative values dim the externals relative to the laptop.
+    Negative values dim the externals relative to the laptop. Positional, so
+    "syncbr -10" works.
     .EXAMPLE
     Sync-MonitorBrightness
     .EXAMPLE
-    Sync-MonitorBrightness -Offset -10
+    syncbr -10
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [ValidateRange(-100, 100)][int]$Offset = 0,
+        [Parameter(Position = 0)][ValidateRange(-100, 100)][int]$Offset = 0,
         [switch]$Quiet
     )
 

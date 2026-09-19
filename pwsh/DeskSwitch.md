@@ -188,15 +188,18 @@ Windows.
 ## Brightness
 
 ```powershell
-gmb                              # every monitor + the laptop panel
-smb -Percent 40                  # all externals
-smb -Role Center -Percent 65     # just one
-syncbr                           # match externals to the laptop right now
-syncbr -Offset -10               # ...but keep externals 10 points dimmer
+gmb                # every monitor + the laptop panel
+smb 40             # all externals to 40%
+smb 65 Center      # just one
+syncbr             # match externals to the laptop right now
+syncbr -10         # ...but keep externals 10 points dimmer
 
 Start-BrightnessFollow           # externals track the laptop's brightness keys live
 Register-BrightnessFollow        # ...and do that from every logon (no admin)
 ```
+
+The first argument is positional throughout, so `smb 40` and `smin Right HDMI` work without
+naming parameters. The named forms (`smb -Percent 40 -Role Center`) still bind as before.
 
 **Dell Display and Peripheral Manager is not involved.** Brightness is the MCCS
 "Luminance" control, VCP `0x10`, on the same DDC/CI channel as input switching, so it works
@@ -239,8 +242,8 @@ $Global:DeskBrightnessMax = 75   # never exceed this when syncing/following
 $Global:DeskBrightnessMin = 10   # never dim below this
 ```
 
-These bound the unattended paths only. An explicit `smb -Percent 90` is treated as
-deliberate and is never clamped.
+These bound the unattended paths only. An explicit `smb 90` is treated as deliberate and is
+never clamped.
 
 ### macOS
 
