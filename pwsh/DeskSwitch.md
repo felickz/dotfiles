@@ -185,17 +185,87 @@ Windows.
 > DDPM supports this P2725DE on Apple Silicon. BetterDisplay exposes similar CLI
 > controls if neither DDPM nor `m1ddc` can see a future display.
 
-## Upgrading the side monitors to USB-C (P2725DE)
-
-Forward compatible by design. The input list is read from each monitor's own MCCS
-capability string, so after fitting the new panels:
+## Brightness
 
 ```powershell
-gmin -Detailed
+gmb                              # every monitor + the laptop panel
+smb -Percent 40                  # all externals
+smb -Role Center -Percent 65     # just one
+syncbr                           # match externals to the laptop right now
+syncbr -Offset -10               # ...but keep externals 10 points dimmer
+
+Start-BrightnessFollow           # externals track the laptop's brightness keys live
+Register-BrightnessFollow        # ...and do that from every logon (no admin)
 ```
 
-`USBC` will appear in the `Supports` column for the side monitors (the P3425WE already
-advertises it today). Then change only the profile map:
+**Dell Display and Peripheral Manager is not involved.** Brightness is the MCCS
+"Luminance" control, VCP `0x10`, on the same DDC/CI channel as input switching, so it works
+with no vendor agent and the same code path everywhere.
+
+The laptop panel is the exception: it is not on DDC at all. It is driven by the graphics
+driver and exposed through WMI (`root\wmi` `WmiMonitorBrightness` /
+`WmiMonitorBrightnessMethods`). That split is why the follow watcher reads one API and
+writes another.
+
+### Following the laptop's brightness keys
+
+Windows raises `WmiMonitorBrightnessEvent` whenever the built-in panel changes, and the
+event carries the new value. So the keyboard brightness keys, the Action Center slider and
+adaptive brightness all drive the externals equally, with no polling, no hotkey to steal
+and no key interception.
+
+Holding a brightness key fires a burst of events. They are coalesced: the watcher waits
+for a quiet period (`-DebounceMs`, default 400) and applies only the final value, so each
+gesture costs one DDC write per monitor instead of one per keystroke. A monitor already at
+the target value is skipped entirely.
+
+Verified end to end: driving the laptop panel to 30%, 70% and 50% moved all three monitors
+to exactly 30, 70 and 50.
+
+### The one-time power-consumption prompt
+
+Raising brightness past a Dell monitor's energy threshold (75% here) makes the monitor pop
+an on-screen "power consumption" confirmation. While that dialog is up **the monitor stops
+answering DDC brightness entirely** - the write is held, reads fail, and the value does not
+move until someone presses a button on the monitor itself. That looks exactly like a silent
+failure: `SetVCPFeature` returns success and the readback still shows the old value.
+
+It only appears once per monitor. Once acknowledged, values above the threshold apply
+normally, so brightness is not clamped by default. If a monitor has not been acknowledged
+yet, or an unattended follow should stay in a comfortable band:
+
+```powershell
+$Global:DeskBrightnessMax = 75   # never exceed this when syncing/following
+$Global:DeskBrightnessMin = 10   # never dim below this
+```
+
+These bound the unattended paths only. An explicit `smb -Percent 90` is treated as
+deliberate and is never clamped.
+
+### macOS
+
+`m1ddc` drives the same VCP control, so the Mac can match:
+
+```bash
+m1ddc display 1 set luminance 40
+m1ddc display 1 get luminance
+```
+
+## USB-C on the side monitors (P2725DE) - done
+
+The side monitors have been upgraded from P2725D to **P2725DE**, and the forward-compatible
+design held: nothing in the module changed. Because the input list is read from each
+monitor's own MCCS capability string, the new capability simply appeared:
+
+```
+Role   Monitor                        Input  Supports
+Left   Dell P2725DE (DisplayPort 1_4) DP     USBC,DP,HDMI
+Center Dell P3425WE(DisplayPort 1.4)  DP     USBC,DP,HDMI
+Right  Dell P2725DE (DisplayPort 1_4) DP     USBC,DP,HDMI
+```
+
+All three now advertise `USBC`, where the old P2725Ds offered only `DP,HDMI`. Moving a
+machine onto the single-cable USB-C path is now a one-word edit per line:
 
 ```powershell
 mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
@@ -203,6 +273,8 @@ personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'USB
 ```
 
 The checked-in Mac configuration already uses input `27`.
+
+Run `gmin -Detailed` after any hardware change to see what each monitor actually offers.
 
 ## Troubleshooting
 
@@ -212,3 +284,4 @@ The checked-in Mac configuration already uses input `27`.
 | A monitor never switches back | Some monitors only answer DDC on the **active** input (not the case on these P2725Ds, which were tested). Use the monitor's OSD to return it once, then invert the release so the machine leaving hands the monitor back while its own input is still active. |
 | Inputs flip back and forth | Two machines both claim the same monitor. Check the profile map: each monitor should be claimed by exactly one machine per Easy-Switch position. |
 | Nothing happens after docking | Roles are resolved at call time from screen X. If Windows has not finished re-arranging displays, re-run. |
+| Brightness write "succeeds" but nothing changes | The monitor is showing its one-time power-consumption prompt and has stopped answering DDC. Press a button on the monitor to acknowledge it. |
