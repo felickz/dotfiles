@@ -37,7 +37,7 @@ $script:InputCodes = [ordered]@{
 }
 
 $script:VcpInputSource = 0x60
-
+
 # .NET cannot unload or replace a type once it is in the AppDomain, so Add-Type is skipped
 # when DeskSwitch.Native already exists. That means a shell which imported an OLDER version
 # of this module keeps the old type even after Import-Module -Force, and any newly added

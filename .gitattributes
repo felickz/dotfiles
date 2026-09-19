@@ -1,0 +1,48 @@
+# Line endings are pinned here rather than left to each machine's core.autocrlf.
+#
+# autocrlf is a per-machine setting (it is configured at system scope on the Windows box
+# here, and typically unset on macOS), so without this file the bytes that land in a commit
+# depend on who made it. That already bit this repo once: pwsh/DeskSwitch.psm1 went in with
+# CRLF and a 26-line change showed up as ~1080 changed lines.
+#
+# It matters more than cosmetics for the macOS side: a shell script stored with CRLF fails
+# at exec time with "bad interpreter: /bin/sh^M: no such file or directory".
+
+# Default: git stores LF, and checks out LF everywhere unless overridden below.
+* text=auto eol=lf
+
+# ─── Windows ───────────────────────────────────────────────────────
+# Stored as LF, checked out as CRLF so they stay native in Windows editors.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# ─── macOS / shell ─────────────────────────────────────────────────
+# Must be LF in the working tree as well as in the repo, or the shebang breaks.
+*.sh                 text eol=lf
+.zshrc               text eol=lf
+.zprofile            text eol=lf
+.bashrc              text eol=lf
+.bash_profile        text eol=lf
+macos/bin/*          text eol=lf
+macos/**/*.conf      text eol=lf
+
+# ─── Docs and data ─────────────────────────────────────────────────
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# ─── Never touch these ─────────────────────────────────────────────
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.dll   binary
+*.exe   binary
