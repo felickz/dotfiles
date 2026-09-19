@@ -37,6 +37,32 @@ $script:InputCodes = [ordered]@{
 }
 
 $script:VcpInputSource = 0x60
+
+# .NET cannot unload or replace a type once it is in the AppDomain, so Add-Type is skipped
+# when DeskSwitch.Native already exists. That means a shell which imported an OLDER version
+# of this module keeps the old type even after Import-Module -Force, and any newly added
+# method fails at call time with a confusing "does not contain a method named ..." error.
+#
+# Detect that case up front and say so plainly, rather than letting it surface later.
+$script:RequiredNativeMethods = @(
+    'GetVCPFeatureAndVCPFeatureReply'
+    'SetVCPFeature'
+    'EnumHMonitors'
+    'IdleMilliseconds'
+    'GetOrientation'
+    'SetOrientation'
+)
+
+if ('DeskSwitch.Native' -as [type]) {
+    $missing = @($script:RequiredNativeMethods | Where-Object {
+        -not ([DeskSwitch.Native].GetMethod($_))
+    })
+    if ($missing) {
+        Write-Warning ("This shell already has an older DeskSwitch.Native loaded, missing: {0}. " -f ($missing -join ', ') +
+            'A .NET type cannot be replaced once loaded, so Import-Module -Force will not help. ' +
+            'Open a new PowerShell window to pick up the current module.')
+    }
+}
 
 if (-not ('DeskSwitch.Native' -as [type])) {
     Add-Type -ErrorAction Stop -ReferencedAssemblies System.Runtime.InteropServices, System.Collections -TypeDefinition @'

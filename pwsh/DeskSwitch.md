@@ -308,3 +308,4 @@ Run `gmin -Detailed` after any hardware change to see what each monitor actually
 | Inputs flip back and forth | Two machines both claim the same monitor. Check the profile map: each monitor should be claimed by exactly one machine per Easy-Switch position. |
 | Nothing happens after docking | Roles are resolved at call time from screen X. If Windows has not finished re-arranging displays, re-run. |
 | Brightness write "succeeds" but nothing changes | The monitor is showing its one-time power-consumption prompt and has stopped answering DDC. Press a button on the monitor to acknowledge it. |
+| `[DeskSwitch.Native] does not contain a method named ...` | That shell loaded an older version of the module. .NET cannot replace a type once it is in the AppDomain, so `Import-Module -Force` and re-sourcing `$PROFILE` both leave the old one in place. **Open a new window.** The module now detects this at import and says so. |
