@@ -185,6 +185,26 @@ Windows.
 > DDPM supports this P2725DE on Apple Silicon. BetterDisplay exposes similar CLI
 > controls if neither DDPM nor `m1ddc` can see a future display.
 
+## Rotation
+
+```powershell
+grot                    # how each monitor is currently rotated
+rot Right Portrait      # turn the right monitor vertical
+rot Right               # toggle back (bare = flip landscape <-> portrait)
+rot Right Landscape     # explicit
+```
+
+Rotation is a **Windows display-config change, not a DDC one** - the monitor panel itself
+has no idea it happened. So this uses `ChangeDisplaySettingsEx` with `DM_DISPLAYORIENTATION`
+rather than a VCP code, which also means it works on a display that is not answering DDC.
+
+Width and height are swapped automatically when crossing between landscape and portrait.
+Without that the call fails with `DISP_CHANGE_BADMODE`: the driver validates the requested
+mode against the requested orientation, so a 2560x1440 panel has to be asked for 1440x2560
+when turned on its side.
+
+Windows repacks the desktop around the new shape, so neighbouring monitors may shift.
+
 ## Brightness
 
 ```powershell

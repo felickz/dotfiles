@@ -1017,6 +1017,8 @@ $functions = @(
     @{ Alias = "gmb";     Name = "Get-MonitorBrightness";        Desc = "Show brightness/contrast of every monitor + the laptop panel" }
     @{ Alias = "smb";     Name = "Set-MonitorBrightness";        Desc = "Set brightness, e.g. smb 40 | smb 65 Center" }
     @{ Alias = "syncbr";  Name = "Sync-MonitorBrightness";       Desc = "Match externals to the laptop panel now (syncbr -10 biases them)" }
+    @{ Alias = "rot";     Name = "Set-MonitorOrientation";       Desc = "Rotate a monitor, e.g. rot Right Portrait | rot Right (toggle)" }
+    @{ Alias = "grot";    Name = "Get-MonitorOrientation";       Desc = "Show how each monitor is currently rotated" }
     @{ Alias = "";        Name = "Start-BrightnessFollow";       Desc = "Externals track the laptop brightness keys (Register-BrightnessFollow = at logon)" }
     @{ Alias = "";        Name = "Start-DeskFollow";             Desc = "Claim this machine's monitors when you type here (Register-DeskFollow = at logon)" }
     @{ Alias = "ccu";     Name = "Check-CopilotUpdates";         Desc = "Check for Copilot CLI updates" }

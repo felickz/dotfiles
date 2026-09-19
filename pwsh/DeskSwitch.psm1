@@ -69,7 +69,73 @@ namespace DeskSwitch {
     [StructLayout(LayoutKind.Sequential)]
     public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DEVMODE {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public ushort dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX, dmPositionY;
+        public uint dmDisplayOrientation, dmDisplayFixedOutput;
+        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public ushort dmLogPixels;
+        public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+        public uint dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2;
+        public uint dmPanningWidth, dmPanningHeight;
+    }
+
     public class Native {
+        public const uint DM_POSITION            = 0x00000020;
+        public const uint DM_DISPLAYORIENTATION  = 0x00000080;
+        public const uint DM_BITSPERPEL          = 0x00040000;
+        public const uint DM_PELSWIDTH           = 0x00080000;
+        public const uint DM_PELSHEIGHT          = 0x00100000;
+        public const uint DM_DISPLAYFREQUENCY    = 0x00400000;
+        public const uint CDS_UPDATEREGISTRY     = 0x00000001;
+        public const int  ENUM_CURRENT_SETTINGS  = -1;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int ChangeDisplaySettingsEx(string dev, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr p);
+
+        /// Current orientation of a display: 0 landscape, 1 portrait (90), 2 landscape
+        /// flipped (180), 3 portrait flipped (270). -1 if it cannot be read.
+        public static int GetOrientation(string device) {
+            var dm = new DEVMODE();
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            if (!EnumDisplaySettings(device, ENUM_CURRENT_SETTINGS, ref dm)) return -1;
+            return (int)dm.dmDisplayOrientation;
+        }
+
+        /// Rotates a display.
+        ///
+        /// Width and height must be swapped when crossing between landscape and portrait,
+        /// or the call fails with DISP_CHANGE_BADMODE: the driver validates the mode against
+        /// the requested orientation, so a 2560x1440 panel has to be asked for 1440x2560
+        /// when turned on its side.
+        public static int SetOrientation(string device, int orientation) {
+            var dm = new DEVMODE();
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            if (!EnumDisplaySettings(device, ENUM_CURRENT_SETTINGS, ref dm)) return -100;
+
+            bool wasPortrait = (dm.dmDisplayOrientation % 2) != 0;
+            bool willBePortrait = (orientation % 2) != 0;
+            if (wasPortrait != willBePortrait) {
+                uint swap = dm.dmPelsWidth;
+                dm.dmPelsWidth = dm.dmPelsHeight;
+                dm.dmPelsHeight = swap;
+            }
+
+            dm.dmDeviceName = device;
+            dm.dmDisplayOrientation = (uint)orientation;
+            dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL |
+                          DM_DISPLAYFREQUENCY | DM_DISPLAYORIENTATION;
+
+            return ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY, IntPtr.Zero);
+        }
+
         public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdc, IntPtr lprc, IntPtr data);
 
         [DllImport("user32.dll")]
@@ -863,17 +929,126 @@ function Unregister-BrightnessFollow {
     }
 }
 
+function Get-MonitorOrientation {
+    <#
+    .SYNOPSIS
+    Shows how each monitor is currently rotated.
+    .EXAMPLE
+    Get-MonitorOrientation
+    #>
+    [CmdletBinding()]
+    param()
+
+    $mons = Get-DeskMonitor
+    try {
+        foreach ($m in $mons) {
+            $o = [DeskSwitch.Native]::GetOrientation($m.Device)
+            [PSCustomObject]@{
+                Role        = $m.Role
+                Monitor     = $m.Description
+                Device      = $m.Device
+                Orientation = switch ($o) {
+                    0 { 'Landscape' } 1 { 'Portrait' }
+                    2 { 'LandscapeFlipped' } 3 { 'PortraitFlipped' }
+                    default { 'unknown' }
+                }
+            }
+        }
+    }
+    finally { Close-DeskMonitorHandle }
+}
+
+function Set-MonitorOrientation {
+    <#
+    .SYNOPSIS
+    Rotates a monitor between landscape and portrait.
+    .DESCRIPTION
+    Rotation is a Windows display-config change, not a DDC one - the monitor panel itself
+    has no idea. So this uses ChangeDisplaySettingsEx with DM_DISPLAYORIENTATION rather than
+    a VCP code, and works even on a display that is not answering DDC.
+
+    Width and height are swapped automatically when crossing between landscape and portrait.
+    Without that the call fails with DISP_CHANGE_BADMODE, because the driver validates the
+    requested mode against the requested orientation.
+
+    Windows repacks the desktop around the new shape, so neighbouring monitors may shift.
+    .PARAMETER Role
+    Left, Center or Right. Positional.
+    .PARAMETER Orientation
+    Landscape, Portrait, LandscapeFlipped or PortraitFlipped. Positional. Omit to toggle
+    between Landscape and Portrait.
+    .EXAMPLE
+    rot Right Portrait
+    .EXAMPLE
+    rot Right            # toggle
+    .EXAMPLE
+    Set-MonitorOrientation -Role Right -Orientation Landscape
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position = 0)][ValidateSet('Left', 'Center', 'Right')][string]$Role,
+        [Parameter(Position = 1)][ValidateSet('Landscape', 'Portrait', 'LandscapeFlipped', 'PortraitFlipped')][string]$Orientation,
+        [switch]$Quiet
+    )
+
+    $codes = @{ Landscape = 0; Portrait = 1; LandscapeFlipped = 2; PortraitFlipped = 3 }
+
+    $mons = Get-DeskMonitor
+    try {
+        $m = $null
+        foreach ($x in $mons) { if ($x.Role -eq $Role) { $m = $x; break } }
+        if (-not $m) {
+            Write-Warning "No DDC-capable monitor in the '$Role' position."
+            return
+        }
+        $device = $m.Device
+        $label = $m.Description
+    }
+    finally { Close-DeskMonitorHandle }
+
+    $current = [DeskSwitch.Native]::GetOrientation($device)
+    if ($current -lt 0) {
+        Write-Warning "Could not read the current orientation of $device."
+        return
+    }
+
+    if (-not $Orientation) {
+        # Toggle: portrait goes back to landscape, anything else goes portrait.
+        $Orientation = if (($current % 2) -ne 0) { 'Landscape' } else { 'Portrait' }
+    }
+    $target = $codes[$Orientation]
+
+    if ($current -eq $target) {
+        if (-not $Quiet) { Write-Host "  $Role is already $Orientation." -ForegroundColor DarkGray }
+        return 0
+    }
+
+    if (-not $PSCmdlet.ShouldProcess("$Role - $label [$device]", "Rotate to $Orientation")) { return }
+
+    $rc = [DeskSwitch.Native]::SetOrientation($device, $target)
+    if ($rc -ne 0) {
+        Write-Warning "$Role : ChangeDisplaySettingsEx returned $rc (see DISP_CHANGE_* codes)."
+        return 0
+    }
+
+    if (-not $Quiet) { Write-Host "  $Role ($label) -> $Orientation" -ForegroundColor Green }
+    1
+}
+
 Set-Alias -Name swdesk -Value Switch-DeskProfile -Force
 Set-Alias -Name gmin   -Value Get-MonitorInput   -Force
 Set-Alias -Name smin   -Value Set-MonitorInput   -Force
 Set-Alias -Name gmb    -Value Get-MonitorBrightness  -Force
 Set-Alias -Name smb    -Value Set-MonitorBrightness  -Force
 Set-Alias -Name syncbr -Value Sync-MonitorBrightness -Force
+Set-Alias -Name rot    -Value Set-MonitorOrientation -Force
+Set-Alias -Name grot   -Value Get-MonitorOrientation -Force
 
 Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskProfile,
     Test-DeskProfileApplied, Start-DeskFollow, Register-DeskFollow, Unregister-DeskFollow,
     Get-DeskMonitor, Close-DeskMonitorHandle, ConvertTo-DeskInputCode, ConvertFrom-DeskInputCode,
     Get-MonitorBrightness, Set-MonitorBrightness, Sync-MonitorBrightness,
     Get-LaptopBrightness, Set-LaptopBrightness,
-    Start-BrightnessFollow, Register-BrightnessFollow, Unregister-BrightnessFollow `
-    -Alias swdesk, gmin, smin, gmb, smb, syncbr
+    Start-BrightnessFollow, Register-BrightnessFollow, Unregister-BrightnessFollow,
+    Get-MonitorOrientation, Set-MonitorOrientation `
+    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot
