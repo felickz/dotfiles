@@ -1450,6 +1450,12 @@ $script:DeskConfigDefaults = [ordered]@{
     DetachDelaySeconds = 20
     # How often the guard reads the monitors. DDC is slow and the bus dislikes hammering.
     PollSeconds        = 5
+    # Consecutive unowned readings required before detaching. Time alone is not enough: a
+    # single bad read during a transient would otherwise darken a healthy screen.
+    ConfirmPolls       = 3
+    # Quiet period after a resume. Displays come back unevenly from Modern Standby, and a
+    # monitor mid-rescan can report an input that is not what it settles on.
+    ResumeGraceSeconds = 90
 }
 
 function Get-DeskConfig {
@@ -1486,13 +1492,17 @@ function Set-DeskConfig {
     param(
         [nullable[bool]]$AutoDetach,
         [ValidateRange(0, 600)][nullable[int]]$DetachDelaySeconds,
-        [ValidateRange(1, 300)][nullable[int]]$PollSeconds
+        [ValidateRange(1, 300)][nullable[int]]$PollSeconds,
+        [ValidateRange(1, 20)][nullable[int]]$ConfirmPolls,
+        [ValidateRange(0, 900)][nullable[int]]$ResumeGraceSeconds
     )
 
     $cfg = Get-DeskConfig
     if ($null -ne $AutoDetach)         { $cfg.AutoDetach         = [bool]$AutoDetach }
     if ($null -ne $DetachDelaySeconds) { $cfg.DetachDelaySeconds = [int]$DetachDelaySeconds }
     if ($null -ne $PollSeconds)        { $cfg.PollSeconds        = [int]$PollSeconds }
+    if ($null -ne $ConfirmPolls)       { $cfg.ConfirmPolls       = [int]$ConfirmPolls }
+    if ($null -ne $ResumeGraceSeconds) { $cfg.ResumeGraceSeconds = [int]$ResumeGraceSeconds }
 
     if (-not $PSCmdlet.ShouldProcess($script:DeskConfigFile, 'Save DeskSwitch settings')) { return $cfg }
 
@@ -1843,6 +1853,37 @@ function Sync-DeskAttachment {
     $changed
 }
 
+function Repair-DeskDetachedState {
+    <#
+    .SYNOPSIS
+    Drops saved detach entries for displays that are attached again.
+    .DESCRIPTION
+    Windows re-attaches displays on its own across sleep, docking and driver restarts, which
+    leaves the saved state claiming something is detached when it is not. That produced a
+    phantom "detached" row in gown and made swdesk try to re-attach a display that was
+    already back.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $state = Get-DeskDetachedState
+    if (-not $state.Count) { return 0 }
+
+    $live = @{}
+    foreach ($d in (Get-DeskAttachedDevice)) { $live[$d.Device] = $true }
+
+    $dropped = 0
+    foreach ($role in @($state.Keys)) {
+        if ($live.ContainsKey($state[$role].Device)) {
+            Write-Verbose "$role ($($state[$role].Device)) is attached again; clearing stale detach state."
+            $state.Remove($role)
+            $dropped++
+        }
+    }
+    if ($dropped) { Save-DeskDetachedState -State $state }
+    $dropped
+}
+
 function Start-DeskGuard {
     <#
     .SYNOPSIS
@@ -1853,12 +1894,19 @@ function Start-DeskGuard {
     to notice is to read VCP 0x60 periodically. The poll is cheap because it stops at the
     first read: nothing is written unless ownership actually changed.
 
-    A monitor must look unowned for DetachDelaySeconds before it is dropped, so hopping to
-    another machine and straight back does not reflow the desktop twice.
+    A monitor must look unowned for DetachDelaySeconds AND across several consecutive polls
+    before it is dropped. Elapsed time alone is not enough: a single bad reading during a
+    transient - waking, re-docking, the monitor rescanning its inputs - would otherwise be
+    enough to detach a healthy screen, which is how a glitch turns into a dark primary
+    monitor that only the monitor's own OSD can recover.
+
+    Nothing is detached for ResumeGraceSeconds after a sleep. Sleep is detected by noticing
+    that far more time passed between two polls than the poll interval, which needs no event
+    subscription and cannot be missed.
 
     Re-attaching is deliberately NOT automatic: a detached monitor leaves the HMONITOR
     enumeration, so this loop cannot see it come back. Take monitors back with
-    "smin <role> <input>", "swdesk", or "syncmon", all of which attach first.
+    "smin <role> <input>", "swdesk", or "syncmon -Reclaim", all of which attach first.
 
     Settings are re-read every pass, so "autodetach Off" takes effect without restarting.
     .EXAMPLE
@@ -1869,13 +1917,31 @@ function Start-DeskGuard {
 
     Write-Host "DeskGuard watching. Ctrl+C to stop." -ForegroundColor Cyan
     $unownedSince = @{}
+    $unownedCount = @{}
+    $lastPass = Get-Date
+    $resumeUntil = [datetime]::MinValue
 
     while ($true) {
         try {
             $cfg = Get-DeskConfig
 
-            if (-not $cfg.AutoDetach) {
+            # A gap far longer than the poll interval means the machine was asleep. Displays
+            # come back unevenly afterwards, so hold off rather than act on the first read.
+            $now = Get-Date
+            $gap = ($now - $lastPass).TotalSeconds
+            if ($gap -gt ([Math]::Max(30, $cfg.PollSeconds * 6))) {
+                $resumeUntil = $now.AddSeconds($cfg.ResumeGraceSeconds)
+                Write-Verbose ("Gap of {0:N0}s suggests a resume; holding off until {1:HH:mm:ss}." -f $gap, $resumeUntil)
                 $unownedSince.Clear()
+                $unownedCount.Clear()
+            }
+            $lastPass = $now
+
+            [void](Repair-DeskDetachedState)
+
+            if (-not $cfg.AutoDetach -or $now -lt $resumeUntil) {
+                $unownedSince.Clear()
+                $unownedCount.Clear()
                 Start-Sleep -Seconds $cfg.PollSeconds
                 continue
             }
@@ -1887,25 +1953,37 @@ function Start-DeskGuard {
 
                 if ($o.Owned -eq $false) {
                     if (-not $unownedSince.ContainsKey($o.Role)) {
-                        $unownedSince[$o.Role] = Get-Date
-                        Write-Verbose "$($o.Role) shows $($o.Input), expected $($o.Expected). Waiting $($cfg.DetachDelaySeconds)s."
+                        $unownedSince[$o.Role] = $now
+                        $unownedCount[$o.Role] = 0
+                        Write-Verbose "$($o.Role) shows $($o.Input), expected $($o.Expected)."
                     }
-                    $waited = ((Get-Date) - $unownedSince[$o.Role]).TotalSeconds
-                    if ($waited -ge $cfg.DetachDelaySeconds) {
+                    $unownedCount[$o.Role] = $unownedCount[$o.Role] + 1
+                    $waited = ($now - $unownedSince[$o.Role]).TotalSeconds
+
+                    # Both gates: long enough AND consistently, so one bad read cannot do it.
+                    if ($waited -ge $cfg.DetachDelaySeconds -and $unownedCount[$o.Role] -ge $cfg.ConfirmPolls) {
                         Write-Host "$($o.Role) taken by another machine (input $($o.Input)) - detaching." -ForegroundColor Yellow
                         [void](Set-DeskMonitorAttached -Role $o.Role -Device $o.Device -Attached $false -Quiet)
                         $unownedSince.Remove($o.Role)
+                        $unownedCount.Remove($o.Role)
                     }
                 }
                 elseif ($unownedSince.ContainsKey($o.Role)) {
-                    # Came back inside the grace period: no reflow, nothing to do.
-                    Write-Verbose "$($o.Role) returned before the grace period expired."
+                    # Came back, or the earlier reading was a blip: reset, no reflow.
+                    Write-Verbose "$($o.Role) is ours again; cancelling its pending detach."
                     $unownedSince.Remove($o.Role)
+                    $unownedCount.Remove($o.Role)
                 }
             }
 
+            # A monitor that stopped answering DDC entirely is NOT evidence of a handover -
+            # it is what a dropped link looks like - so forget it rather than counting on.
             foreach ($role in @($unownedSince.Keys)) {
-                if (-not $seen.ContainsKey($role)) { $unownedSince.Remove($role) }
+                if (-not $seen.ContainsKey($role)) {
+                    Write-Verbose "$role is no longer enumerated; cancelling its pending detach."
+                    $unownedSince.Remove($role)
+                    $unownedCount.Remove($role)
+                }
             }
         }
         catch {
@@ -1973,6 +2051,7 @@ Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskPro
     Get-DeskConfig, Set-DeskConfig, Set-DeskAutoDetach,
     Get-DeskProfileMap, Save-DeskProfileMap,
     Get-DeskOwnership, Get-DeskExpectedInput, Get-DeskDetachedState, Get-DeskAttachedDevice,
+    Repair-DeskDetachedState,
     Set-DeskMonitorAttached, Sync-DeskAttachment,
     Start-DeskGuard, Register-DeskGuard, Unregister-DeskGuard `
     -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach

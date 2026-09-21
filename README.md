@@ -23,10 +23,10 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1097) | Match externals to the laptop panel now (syncbr -10 biases them) |
 | `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1268) | Rotate a monitor, e.g. rot Right Portrait \| rot Portrait \| rot Right (toggle) |
 | `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1239) | Show how each monitor is currently rotated |
-| `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1563) | Which monitors this PC actually drives (Owned=False means another machine has it) |
-| `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L1797) | Drop monitors another machine took (-Reclaim to also re-attach) |
-| `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1503) | Toggle auto-detach live: autodetach On \| Off |
-|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L1846) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
+| `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1573) | Which monitors this PC actually drives (Owned=False means another machine has it) |
+| `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L1807) | Drop monitors another machine took (-Reclaim to also re-attach) |
+| `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1513) | Toggle auto-detach live: autodetach On \| Off |
+|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L1887) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
 |  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1134) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
 |  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L780) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
 | `ccu` | [`Check-CopilotUpdates`](pwsh/Microsoft.PowerShell_profile.ps1#L203) | Check for Copilot CLI updates |
