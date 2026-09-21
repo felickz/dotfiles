@@ -198,6 +198,7 @@ Windows repacks the desktop around the new shape, so neighbouring monitors may s
 gown                 # who actually drives each monitor right now
 swdesk               # take everything back: re-attach, then set inputs
 syncmon              # drop monitors another machine took
+setprim '\\.\DISPLAY1'   # move "primary" by hand, if ever needed
 autodetach Off       # pause it for a quick hop to the other machine
 autodetach On
 
@@ -266,7 +267,11 @@ re-attaches first, and handing a monitor to another machine detaches it afterwar
   `SDC_TOPOLOGY_EXTEND` will not undo it. Geometry is saved to
   `%LOCALAPPDATA%\deskswitch-detached.json` before detaching and replayed on the way back.
 - Windows silently refuses to detach the **primary** display: the call reports success and
-  nothing changes. That case is refused up front rather than appearing to work.
+  nothing changes. Rather than giving up, primary is first handed to a display this machine
+  can still see, then the detach proceeds. The built-in laptop panel is preferred because it
+  has no DDC and so can never be taken by another machine. This is the common case on the
+  side machines, where the single external monitor *is* the primary display - before it was
+  handled, `syncmon` simply refused and the screen stayed on the desktop.
 - Roles are worked out from screen X **including** detached monitors, so handing over the
   left panel does not silently promote the centre one to "Left".
 - A monitor that has just had its input switched **drops out of the DDC enumeration for a

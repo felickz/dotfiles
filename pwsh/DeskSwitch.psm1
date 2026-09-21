@@ -64,6 +64,7 @@ $script:RequiredNativeMethods = @(
     'Attach'
     'ListAttached'
     'ListAllDisplays'
+    'SetPrimary'
 )
 
 if ('DeskSwitch.Native' -as [type]) {
@@ -141,6 +142,7 @@ namespace DeskSwitch {
         public const uint DM_PELSHEIGHT          = 0x00100000;
         public const uint DM_DISPLAYFREQUENCY    = 0x00400000;
         public const uint CDS_UPDATEREGISTRY     = 0x00000001;
+        public const uint CDS_SET_PRIMARY        = 0x00000010;
         public const uint CDS_NORESET            = 0x10000000;
         public const int  ENUM_CURRENT_SETTINGS  = -1;
         public const int  ENUM_REGISTRY_SETTINGS = -2;
@@ -238,6 +240,73 @@ namespace DeskSwitch {
             dm.dmPositionY = 0;
             int rc = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, 0, IntPtr.Zero);
             return rc;
+        }
+
+        /// Makes a display the primary one.
+        ///
+        /// Windows defines the primary display as the one at position (0,0), so this cannot
+        /// be a single call: every OTHER attached display has to be shifted by the same
+        /// delta, or the desktop keeps the old origin and the change is rejected or lands
+        /// with the screens overlapping.
+        ///
+        /// All of it is staged with CDS_NORESET and committed by one final NULL call, so the
+        /// desktop reflows once instead of once per display.
+        ///
+        /// This exists to unblock detaching. Windows silently refuses to detach the primary
+        /// display, so when the machine's only external monitor is primary and another
+        /// machine takes it, there is no way to drop it from the desktop without first
+        /// handing "primary" to a panel this machine can still see.
+        public static int SetPrimary(string device) {
+            var target = new DEVMODE();
+            target.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            if (!EnumDisplaySettings(device, ENUM_CURRENT_SETTINGS, ref target)) return -101;
+            if (target.dmPelsWidth == 0) return -102;
+
+            int dx = -target.dmPositionX;
+            int dy = -target.dmPositionY;
+
+            // Already at the origin and already flagged primary: nothing to do.
+            if (dx == 0 && dy == 0 && IsPrimary(device)) return 0;
+
+            // The new primary goes first; it is what defines the new origin.
+            var dm = new DEVMODE();
+            dm.dmDeviceName = device;
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            dm.dmPositionX = 0;
+            dm.dmPositionY = 0;
+            dm.dmFields = DM_POSITION;
+            int rc = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero,
+                CDS_SET_PRIMARY | CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+            if (rc != 0) return rc;
+
+            foreach (string line in ListAttached()) {
+                string[] f = line.Split('|');
+                if (f[0] == device) continue;
+
+                var other = new DEVMODE();
+                other.dmDeviceName = f[0];
+                other.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+                other.dmPositionX = int.Parse(f[1]) + dx;
+                other.dmPositionY = int.Parse(f[2]) + dy;
+                other.dmFields = DM_POSITION;
+                rc = ChangeDisplaySettingsEx(f[0], ref other, IntPtr.Zero,
+                    CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+                if (rc != 0) return rc;
+            }
+
+            return ChangeDisplaySettingsEx(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+        }
+
+        public static bool IsPrimary(string device) {
+            for (uint i = 0; i < 32; i++) {
+                var dd = new DISPLAY_DEVICE();
+                dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+                if (!EnumDisplayDevices(IntPtr.Zero, i, ref dd, 0)) break;
+                if (dd.DeviceName == device) {
+                    return (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+                }
+            }
+            return false;
         }
 
         /// Every display the driver knows about as "device|attached|monitorName", including
@@ -1728,6 +1797,79 @@ function Get-DeskAttachedDevice {
     $rows
 }
 
+function Get-DeskInternalDevice {
+    <#
+    .SYNOPSIS
+    Attached displays that answer no DDC - in practice the laptop's built-in panel.
+    .DESCRIPTION
+    Used to choose a safe primary. A panel with no DDC cannot be switched to another
+    machine's input, so it is the one display this machine can always still see. Promoting
+    it is what makes detaching a stolen external possible.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $ddc = @{}
+    $mons = @(Get-DeskMonitor)
+    try {
+        foreach ($m in $mons) { $ddc[$m.Device] = $true }
+    }
+    finally { Close-DeskMonitorHandle $script:LastHandleSets }
+
+    @(Get-DeskAttachedDevice | Where-Object { -not $ddc.ContainsKey($_.Device) })
+}
+
+function Set-DeskPrimary {
+    <#
+    .SYNOPSIS
+    Makes a display the primary one, shifting the rest of the desktop to match.
+    .DESCRIPTION
+    Windows defines the primary display as the one at (0,0), so every other display is moved
+    by the same delta and the whole thing is committed in a single reflow.
+
+    The reason this exists is narrow but important: Windows silently refuses to detach the
+    PRIMARY display. When this machine's only external is primary and another machine takes
+    its input, the screen cannot be dropped from the desktop - windows keep landing on a
+    panel showing someone else's PC - until "primary" moves somewhere this machine can see.
+    .PARAMETER Device
+    GDI device name, e.g. "\\.\DISPLAY1".
+    .EXAMPLE
+    Set-DeskPrimary '\\.\DISPLAY1'
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Device,
+        [switch]$Quiet
+    )
+
+    if ([DeskSwitch.Native]::IsPrimary($Device)) {
+        if (-not $Quiet) { Write-Host "  $Device is already primary." -ForegroundColor DarkGray }
+        return 0
+    }
+
+    if (-not (Get-DeskAttachedDevice | Where-Object { $_.Device -eq $Device })) {
+        Write-Warning "$Device is not attached to the desktop; cannot make it primary."
+        return 0
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($Device, 'Make primary display')) { return 0 }
+
+    $rc = [DeskSwitch.Native]::SetPrimary($Device)
+    if ($rc -ne 0) {
+        Write-Warning "$Device : SetPrimary returned $rc (see DISP_CHANGE_* codes)."
+        return 0
+    }
+
+    Start-Sleep -Milliseconds 700
+    if (-not [DeskSwitch.Native]::IsPrimary($Device)) {
+        Write-Warning "$Device did not become primary; nothing changed."
+        return 0
+    }
+
+    if (-not $Quiet) { Write-Host "  $Device is now the primary display." -ForegroundColor Green }
+    1
+}
+
 function Set-DeskMonitorAttached {
     <#
     .SYNOPSIS
@@ -1816,11 +1958,37 @@ function Set-DeskMonitorAttached {
         Write-Warning 'Refusing to detach the only active display.'
         return 0
     }
+    # Windows silently refuses to detach the PRIMARY display. Rather than giving up - which
+    # left the monitor on the desktop with windows landing on a screen showing another
+    # machine - hand "primary" to a display this machine can still see. The built-in panel
+    # is preferred because it has no DDC and so can never be taken by another machine.
+    $isPrimary = $false
     foreach ($a in $attachedDevices) {
-        if ($a.Device -eq $device -and $a.Primary) {
-            Write-Warning "$Role ($device) is the PRIMARY display; Windows will not detach it. Make another monitor primary in Settings > Display first."
+        if ($a.Device -eq $device -and $a.Primary) { $isPrimary = $true; break }
+    }
+
+    if ($isPrimary) {
+        $candidate = @(Get-DeskInternalDevice | Where-Object { $_.Device -ne $device })
+        if (-not $candidate) {
+            $candidate = @($attachedDevices | Where-Object { $_.Device -ne $device })
+        }
+        if (-not $candidate) {
+            Write-Warning "$Role ($device) is the PRIMARY display and there is nothing else to promote."
             return 0
         }
+
+        $newPrimary = $candidate[0].Device
+        if (-not $Quiet) {
+            Write-Host "  $Role is primary; moving primary to $newPrimary first." -ForegroundColor Cyan
+        }
+        if (-not (Set-DeskPrimary -Device $newPrimary -Quiet:$Quiet)) {
+            Write-Warning "$Role ($device) is the PRIMARY display and primary could not be moved; not detaching."
+            return 0
+        }
+
+        # Positions shift when the origin moves, so the saved geometry has to come from
+        # after the promotion or the monitor would be restored to a stale place.
+        $attachedDevices = Get-DeskAttachedDevice
     }
 
     # Only chance to read this: the detach wipes it.
@@ -2336,6 +2504,7 @@ Set-Alias -Name gown       -Value Get-DeskOwnership   -Force
 Set-Alias -Name syncmon    -Value Sync-DeskAttachment -Force
 Set-Alias -Name autodetach -Value Set-DeskAutoDetach  -Force
 Set-Alias -Name fixmon     -Value Restore-DeskDisplays -Force
+Set-Alias -Name setprim    -Value Set-DeskPrimary      -Force
 
 Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskProfile,
     Test-DeskProfileApplied, Start-DeskFollow, Register-DeskFollow, Unregister-DeskFollow,
@@ -2350,5 +2519,6 @@ Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskPro
     Repair-DeskDetachedState, Restore-DeskDisplays,
     Get-DeskBaseline, Update-DeskBaseline, Get-DeskMissingMonitor,
     Set-DeskMonitorAttached, Sync-DeskAttachment,
+    Set-DeskPrimary, Get-DeskInternalDevice,
     Start-DeskGuard, Register-DeskGuard, Unregister-DeskGuard `
-    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach, fixmon
+    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach, fixmon, setprim

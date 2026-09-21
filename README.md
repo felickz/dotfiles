@@ -15,20 +15,21 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 | `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L695) | Wake USB-C dock monitors stuck after sleep (admin) |
 | `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L774) | Toggle multi-monitor extend <-> laptop screen only |
-| `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L751) | Take all my monitors back (or hand over: swdesk mac \| personal) |
-| `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L587) | Show each monitor's role, current input (-Detailed = supported inputs) |
-| `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L613) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
-| `gmb` | [`Get-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1022) | Show brightness/contrast of every monitor + the laptop panel |
-| `smb` | [`Set-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1063) | Set brightness, e.g. smb 40 \| smb 65 Center |
-| `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1150) | Match externals to the laptop panel now (syncbr -10 biases them) |
-| `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1321) | Rotate a monitor, e.g. rot Right Portrait \| rot Portrait \| rot Right (toggle) |
-| `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1292) | Show how each monitor is currently rotated |
-| `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1626) | Which monitors this PC actually drives (Owned=False means another machine has it) |
-| `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L1864) | Drop monitors another machine took (-Reclaim to also re-attach) |
-| `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1566) | Toggle auto-detach live: autodetach On \| Off |
-|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L2177) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
-|  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1187) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
-|  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L833) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
+| `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L820) | Take all my monitors back (or hand over: swdesk mac \| personal) |
+| `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L656) | Show each monitor's role, current input (-Detailed = supported inputs) |
+| `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L682) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
+| `gmb` | [`Get-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1091) | Show brightness/contrast of every monitor + the laptop panel |
+| `smb` | [`Set-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1132) | Set brightness, e.g. smb 40 \| smb 65 Center |
+| `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1219) | Match externals to the laptop panel now (syncbr -10 biases them) |
+| `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1390) | Rotate a monitor, e.g. rot Right Portrait \| rot Portrait \| rot Right (toggle) |
+| `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1361) | Show how each monitor is currently rotated |
+| `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1695) | Which monitors this PC actually drives (Owned=False means another machine has it) |
+| `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L2032) | Drop monitors another machine took (-Reclaim to also re-attach) |
+| `setprim` | [`Set-DeskPrimary`](pwsh/DeskSwitch.psm1#L1822) | Make a display primary, e.g. setprim '\\\\.\\DISPLAY1' |
+| `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1635) | Toggle auto-detach live: autodetach On \| Off |
+|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L2345) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
+|  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1256) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
+|  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L902) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
 | `ccu` | [`Check-CopilotUpdates`](pwsh/Microsoft.PowerShell_profile.ps1#L203) | Check for Copilot CLI updates |
 | `gcop` | [`Get-CopilotProcess`](pwsh/Microsoft.PowerShell_profile.ps1#L143) | Copilot CLI/app instances holding the shared plugin git cache |
 | `udgh` | [`Update-GhExtensions`](pwsh/Microsoft.PowerShell_profile.ps1#L230) | Update gh CLI extensions (skipped while Copilot runs; -Force) |

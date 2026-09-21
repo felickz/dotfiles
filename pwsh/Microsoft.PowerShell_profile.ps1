@@ -1161,6 +1161,7 @@ $functions = @(
     @{ Alias = "grot";    Name = "Get-MonitorOrientation";       Desc = "Show how each monitor is currently rotated" }
     @{ Alias = "gown";    Name = "Get-DeskOwnership";            Desc = "Which monitors this PC actually drives (Owned=False means another machine has it)" }
     @{ Alias = "syncmon"; Name = "Sync-DeskAttachment";          Desc = "Drop monitors another machine took (-Reclaim to also re-attach)" }
+    @{ Alias = "setprim"; Name = "Set-DeskPrimary";              Desc = "Make a display primary, e.g. setprim '\\.\DISPLAY1'" }
     @{ Alias = "autodetach"; Name = "Set-DeskAutoDetach";        Desc = "Toggle auto-detach live: autodetach On | Off" }
     @{ Alias = "";        Name = "Start-DeskGuard";              Desc = "Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon)" }
     @{ Alias = "";        Name = "Start-BrightnessFollow";       Desc = "Externals track the laptop brightness keys (Register-BrightnessFollow = at logon)" }
