@@ -1013,11 +1013,11 @@ $functions = @(
     @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle multi-monitor extend <-> laptop screen only" }
     @{ Alias = "swdesk";  Name = "Switch-DeskProfile";           Desc = "Point monitors at a machine: swdesk main | mac | personal" }
     @{ Alias = "gmin";    Name = "Get-MonitorInput";             Desc = "Show each monitor's role, current input (-Detailed = supported inputs)" }
-    @{ Alias = "smin";    Name = "Set-MonitorInput";             Desc = "Set one monitor's input, e.g. smin Right HDMI" }
+    @{ Alias = "smin";    Name = "Set-MonitorInput";             Desc = "Set a monitor's input, e.g. smin DP | smin Right HDMI" }
     @{ Alias = "gmb";     Name = "Get-MonitorBrightness";        Desc = "Show brightness/contrast of every monitor + the laptop panel" }
     @{ Alias = "smb";     Name = "Set-MonitorBrightness";        Desc = "Set brightness, e.g. smb 40 | smb 65 Center" }
     @{ Alias = "syncbr";  Name = "Sync-MonitorBrightness";       Desc = "Match externals to the laptop panel now (syncbr -10 biases them)" }
-    @{ Alias = "rot";     Name = "Set-MonitorOrientation";       Desc = "Rotate a monitor, e.g. rot Right Portrait | rot Right (toggle)" }
+    @{ Alias = "rot";     Name = "Set-MonitorOrientation";       Desc = "Rotate a monitor, e.g. rot Right Portrait | rot Portrait | rot Right (toggle)" }
     @{ Alias = "grot";    Name = "Get-MonitorOrientation";       Desc = "Show how each monitor is currently rotated" }
     @{ Alias = "";        Name = "Start-BrightnessFollow";       Desc = "Externals track the laptop brightness keys (Register-BrightnessFollow = at logon)" }
     @{ Alias = "";        Name = "Start-DeskFollow";             Desc = "Claim this machine's monitors when you type here (Register-DeskFollow = at logon)" }

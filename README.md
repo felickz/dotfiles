@@ -15,16 +15,16 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 | `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L555) | Wake USB-C dock monitors stuck after sleep (admin) |
 | `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L634) | Toggle multi-monitor extend <-> laptop screen only |
-| `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L437) | Point monitors at a machine: swdesk main \| mac \| personal |
-| `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L351) | Show each monitor's role, current input (-Detailed = supported inputs) |
-| `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L377) | Set one monitor's input, e.g. smin Right HDMI |
-| `gmb` | [`Get-MonitorBrightness`](pwsh/DeskSwitch.psm1#L691) | Show brightness/contrast of every monitor + the laptop panel |
-| `smb` | [`Set-MonitorBrightness`](pwsh/DeskSwitch.psm1#L732) | Set brightness, e.g. smb 40 \| smb 65 Center |
-| `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L819) | Match externals to the laptop panel now (syncbr -10 biases them) |
-| `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L987) | Rotate a monitor, e.g. rot Right Portrait \| rot Right (toggle) |
-| `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L958) | Show how each monitor is currently rotated |
-|  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L856) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
-|  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L507) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
+| `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L538) | Point monitors at a machine: swdesk main \| mac \| personal |
+| `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L421) | Show each monitor's role, current input (-Detailed = supported inputs) |
+| `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L447) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
+| `gmb` | [`Get-MonitorBrightness`](pwsh/DeskSwitch.psm1#L801) | Show brightness/contrast of every monitor + the laptop panel |
+| `smb` | [`Set-MonitorBrightness`](pwsh/DeskSwitch.psm1#L842) | Set brightness, e.g. smb 40 \| smb 65 Center |
+| `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L929) | Match externals to the laptop panel now (syncbr -10 biases them) |
+| `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1097) | Rotate a monitor, e.g. rot Right Portrait \| rot Portrait \| rot Right (toggle) |
+| `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1068) | Show how each monitor is currently rotated |
+|  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L966) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
+|  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L617) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
 | `ccu` | [`Check-CopilotUpdates`](pwsh/Microsoft.PowerShell_profile.ps1#L203) | Check for Copilot CLI updates |
 | `gcop` | [`Get-CopilotProcess`](pwsh/Microsoft.PowerShell_profile.ps1#L143) | Copilot CLI/app instances holding the shared plugin git cache |
 | `udgh` | [`Update-GhExtensions`](pwsh/Microsoft.PowerShell_profile.ps1#L230) | Update gh CLI extensions (skipped while Copilot runs; -Force) |
@@ -67,18 +67,20 @@ Display and Peripheral Manager's CLI when DDPM is installed, with `m1ddc` as an
 optional fallback. The profile supplies:
 
 ```bash
-swmon list    # identify the external display (this P2725DE is index 1)
+swmon list    # identify the external display
 swmon status
-swmon pc      # switch the right Dell to the Windows PC's DisplayPort
+swmon pc      # switch the Dell to the Windows PC's DisplayPort
 swmon mac     # switch it back to the Mac's USB-C input
 ```
 
 `desk-monitor` remains the underlying command, and the older `desk-pc` and
 `desk-mac` convenience aliases remain available.
 
-The default display and Dell input codes are version controlled in
-[`macos/desk-monitor.conf`](macos/desk-monitor.conf). DDPM currently identifies the
-P2725DE as index `1`.
+The Dell input codes are version controlled in
+[`macos/desk-monitor.conf`](macos/desk-monitor.conf). The display defaults to `auto`:
+this Mac is USB-C to a single monitor, so there is nothing to choose between and the
+one it can see is used. Pass an index when several are attached
+(`swmon pc 2`), or pin one with `DESK_MONITOR_DISPLAY` in the config.
 
 To create only the zsh profile link manually:
 

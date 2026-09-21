@@ -38,6 +38,14 @@ $script:InputCodes = [ordered]@{
 
 $script:VcpInputSource = 0x60
 
+# Desk positions, and the label used when there is only one DDC-capable monitor. A machine
+# wired to a single panel has no left/right to speak of - the personal laptop reaches only
+# the left monitor and the Mac only the right one, yet each sees exactly one - so calling it
+# 'Only' says what is true instead of guessing a position, and Resolve-DeskMonitor lets any
+# requested role land on it.
+$script:DeskRoles = @('Left', 'Center', 'Right')
+$script:SoleRole = 'Only'
+
 # .NET cannot unload or replace a type once it is in the AppDomain, so Add-Type is skipped
 # when DeskSwitch.Native already exists. That means a shell which imported an OLDER version
 # of this module keeps the old type even after Import-Module -Force, and any newly added
@@ -315,9 +323,11 @@ function Get-DeskMonitor {
     }
 
     # Assign left/center/right by X order across however many DDC monitors are present.
+    # A single monitor gets 'Only' rather than a made-up position: this machine can reach
+    # just the one panel, wherever it physically sits.
     $sorted = @($result | Sort-Object X)
     for ($i = 0; $i -lt $sorted.Count; $i++) {
-        $sorted[$i].Role = if ($sorted.Count -eq 1) { 'Center' }
+        $sorted[$i].Role = if ($sorted.Count -eq 1) { $script:SoleRole }
             elseif ($i -eq 0) { 'Left' }
             elseif ($i -eq $sorted.Count - 1) { 'Right' }
             else { 'Center' }
@@ -346,6 +356,66 @@ function Close-DeskMonitorHandle {
         if ($set) { [void][DeskSwitch.Native]::DestroyPhysicalMonitors($set.Count, $set) }
     }
     $script:LastHandleSets = @()
+}
+
+function Resolve-DeskMonitor {
+    <#
+    .SYNOPSIS
+    Picks which monitors a command acts on, tolerating an omitted or mismatched role when
+    only one DDC-capable monitor is attached.
+    .DESCRIPTION
+    Roles only mean something on a desk with more than one controllable monitor. The
+    Surface Studio drives all three, but the personal laptop is USB-C to the left panel and
+    the Mac is USB-C to the right one, so each of those reaches exactly one monitor and
+    there is nothing to choose between. On those machines naming a position is busywork,
+    and naming the "wrong" one should not be an error either - there is only one answer.
+
+    So with a single monitor attached this returns it for any role, or for no role at all.
+    With several, roles match exactly, an omitted role means every monitor, and a role with
+    no monitor behind it warns as before.
+    .PARAMETER Monitor
+    Monitors from Get-DeskMonitor.
+    .PARAMETER Role
+    Requested roles. Empty means "whatever is attached".
+    .PARAMETER ExactRole
+    Suppress the single-monitor fallback. Used when applying a profile that owns more than
+    one role, so a three-monitor profile cannot drive one panel three times.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()][object[]]$Monitor = @(),
+        [AllowEmptyCollection()][string[]]$Role = @(),
+        [switch]$ExactRole
+    )
+
+    $mons = @($Monitor)
+    $roles = @($Role | Where-Object { $_ })
+
+    if ($mons.Count -eq 0) { return @() }
+
+    if ($mons.Count -eq 1 -and -not $ExactRole) {
+        if ($roles.Count -le 1) {
+            if ($roles.Count -eq 1 -and $roles[0] -ne $mons[0].Role) {
+                Write-Verbose "Only one DDC-capable monitor is attached; using it for '$($roles[0])'."
+            }
+            return @($mons[0])
+        }
+        # Several roles but one monitor: the caller means specific panels, so fall through
+        # to exact matching rather than driving the same one repeatedly.
+    }
+
+    if ($roles.Count -eq 0) { return $mons }
+
+    $picked = @()
+    foreach ($r in $roles) {
+        $m = @($mons | Where-Object { $_.Role -eq $r })
+        if (-not $m) {
+            Write-Warning "No DDC-capable monitor in the '$r' position (dark or detached?)."
+            continue
+        }
+        $picked += $m
+    }
+    $picked
 }
 
 function Get-MonitorInput {
@@ -385,10 +455,19 @@ function Set-MonitorInput {
     Dell monitors stop answering DDC for a moment while they retrain the link, so the readback
     is retried rather than trusted on the first attempt; an immediate read returns 0x00 and
     would look like a failure.
+
+    The role is optional. A machine wired to one monitor has nothing to choose between, so
+    "smin DP" is enough there - and on such a machine a role that does not match, such as
+    "smin Left DP" from the laptop that only reaches the left panel, still lands on it.
     .PARAMETER Role
-    Left, Center or Right - resolved by horizontal position. Positional.
+    Left, Center or Right - resolved by horizontal position. Positional, and optional:
+    omit it to target every attached monitor, or the only one.
     .PARAMETER Source
-    DP, HDMI, USBC, or a raw code such as 0x1B. Positional.
+    DP, HDMI, USBC, or a raw code such as 0x1B. Positional; may be given on its own.
+    .PARAMETER ExactRole
+    Require the role to match a real desk position, disabling the single-monitor fallback.
+    .EXAMPLE
+    smin DP
     .EXAMPLE
     smin Right HDMI
     .EXAMPLE
@@ -396,37 +475,59 @@ function Set-MonitorInput {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory, Position = 0)][ValidateSet('Left', 'Center', 'Right')][string[]]$Role,
-        [Parameter(Mandatory, Position = 1)][Alias('Input')][string]$Source,
+        [Parameter(Position = 0)]
+        [ArgumentCompleter({ param($c, $p, $word) $script:DeskRoles | Where-Object { $_ -like "$word*" } })]
+        [string[]]$Role,
+
+        [Parameter(Position = 1)]
+        [Alias('Input')]
+        [ArgumentCompleter({ param($c, $p, $word) $script:InputCodes.Keys | Where-Object { $_ -like "$word*" } })]
+        [string]$Source,
+
+        [switch]$ExactRole,
         [switch]$Quiet
     )
 
+    $roles = @($Role | Where-Object { $_ })
+
+    # "smin DP": a lone positional argument is the input, not a position. Roles and input
+    # names do not overlap, so the two cases stay distinguishable.
+    if (-not $Source -and $roles.Count -eq 1) {
+        if ($roles[0] -in $script:DeskRoles) {
+            throw "Set-MonitorInput: -Source is required, e.g. 'smin $($roles[0]) DP'."
+        }
+        $Source = $roles[0]
+        $roles = @()
+    }
+    if (-not $Source) { throw "Set-MonitorInput: -Source is required, e.g. 'smin DP' or 'smin Right HDMI'." }
+
+    $unknown = @($roles | Where-Object { $_ -notin $script:DeskRoles -and $_ -ne $script:SoleRole })
+    if ($unknown) {
+        throw "Unknown role '$($unknown -join "', '")'. Valid roles: $($script:DeskRoles -join ', ')."
+    }
+
     $code = ConvertTo-DeskInputCode $Source
     $name = ConvertFrom-DeskInputCode $code
-    $mons = Get-DeskMonitor
+    $mons = @(Get-DeskMonitor)
     $changed = 0
 
     try {
-        foreach ($r in $Role) {
-            $m = $mons | Where-Object Role -eq $r
-            if (-not $m) {
-                Write-Warning "No DDC-capable monitor in the '$r' position."
-                continue
-            }
+        if ($mons.Count -eq 0) { Write-Warning 'No DDC-capable monitor found.' }
 
+        foreach ($m in Resolve-DeskMonitor -Monitor $mons -Role $roles -ExactRole:$ExactRole) {
             if ($m.InputCode -eq $code) {
-                if (-not $Quiet) { Write-Host "  $r ($($m.Description)) already on $name." -ForegroundColor DarkGray }
+                if (-not $Quiet) { Write-Host "  $($m.Role) ($($m.Description)) already on $name." -ForegroundColor DarkGray }
                 continue
             }
 
-            if (-not $PSCmdlet.ShouldProcess("$r - $($m.Description)", "Switch input to $name")) { continue }
+            if (-not $PSCmdlet.ShouldProcess("$($m.Role) - $($m.Description)", "Switch input to $name")) { continue }
 
             if (-not [DeskSwitch.Native]::SetVCPFeature($m.Handle, $script:VcpInputSource, $code)) {
-                Write-Warning "$r : SetVCPFeature failed (err $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
+                Write-Warning "$($m.Role): SetVCPFeature failed (err $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
                 continue
             }
             $changed++
-            if (-not $Quiet) { Write-Host "  $r ($($m.Description)) -> $name" -ForegroundColor Green }
+            if (-not $Quiet) { Write-Host "  $($m.Role) ($($m.Description)) -> $name" -ForegroundColor Green }
         }
     }
     finally { Close-DeskMonitorHandle $script:LastHandleSets }
@@ -474,9 +575,14 @@ function Switch-DeskProfile {
     $deskProfile = $Global:DeskProfiles[$Name]
     if (-not $Quiet) { Write-Host "Applying desk profile '$Name'..." -ForegroundColor Cyan }
 
+    # A profile that owns several positions must match them exactly, or a machine currently
+    # seeing one monitor would drive that single panel once per entry. A profile that owns
+    # one position is unambiguous, so it may use the single-monitor fallback.
+    $exact = $deskProfile.Monitors.Count -gt 1
+
     $total = 0
     foreach ($entry in $deskProfile.Monitors.GetEnumerator()) {
-        $total += Set-MonitorInput -Role $entry.Key -Source $entry.Value -Quiet:$Quiet
+        $total += Set-MonitorInput -Role $entry.Key -Source $entry.Value -ExactRole:$exact -Quiet:$Quiet
     }
 
     if (-not $Quiet -and $total -eq 0) { Write-Host "  Nothing to change." -ForegroundColor DarkGray }
@@ -492,12 +598,16 @@ function Test-DeskProfileApplied {
     param([Parameter(Mandatory)][string]$Name)
 
     $deskProfile = $Global:DeskProfiles[$Name]
-    $mons = Get-DeskMonitor
+    $mons = @(Get-DeskMonitor)
+    $exact = $deskProfile.Monitors.Count -gt 1
     try {
         foreach ($entry in $deskProfile.Monitors.GetEnumerator()) {
-            $m = $mons | Where-Object Role -eq $entry.Key
-            if (-not $m) { continue }
-            if ($m.InputCode -ne (ConvertTo-DeskInputCode $entry.Value)) { return $false }
+            $matched = Resolve-DeskMonitor -Monitor $mons -Role $entry.Key -ExactRole:$exact -WarningAction SilentlyContinue
+            if (-not $matched) { continue }
+            $code = ConvertTo-DeskInputCode $entry.Value
+            foreach ($m in $matched) {
+                if ($m.InputCode -ne $code) { return $false }
+            }
         }
         return $true
     }
@@ -745,7 +855,7 @@ function Set-MonitorBrightness {
     maximum other than 100.
     .PARAMETER Role
     Which monitors. Defaults to every DDC-capable monitor. Also positional, so
-    "smb 65 Center" works.
+    "smb 65 Center" works. On a machine that reaches only one monitor any role lands on it.
     .PARAMETER IncludeLaptop
     Also set the built-in panel.
     .EXAMPLE
@@ -758,23 +868,23 @@ function Set-MonitorBrightness {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position = 0)][ValidateRange(0, 100)][int]$Percent,
-        [Parameter(Position = 1)][ValidateSet('Left', 'Center', 'Right')][string[]]$Role,
+        [Parameter(Position = 1)]
+        [ArgumentCompleter({ param($c, $p, $word) $script:DeskRoles | Where-Object { $_ -like "$word*" } })]
+        [string[]]$Role,
         [switch]$IncludeLaptop,
         [switch]$Quiet
     )
 
-    $mons = Get-DeskMonitor
+    $roles = @($Role | Where-Object { $_ })
+    $unknown = @($roles | Where-Object { $_ -notin $script:DeskRoles -and $_ -ne $script:SoleRole })
+    if ($unknown) {
+        throw "Unknown role '$($unknown -join "', '")'. Valid roles: $($script:DeskRoles -join ', ')."
+    }
+
+    $mons = @(Get-DeskMonitor)
     $changed = 0
     try {
-        $targets = if ($Role) { @($mons | Where-Object { $_.Role -in $Role }) } else { @($mons) }
-
-        if ($Role) {
-            foreach ($r in $Role) {
-                if (-not ($targets | Where-Object { $_.Role -eq $r })) {
-                    Write-Warning "No DDC-capable monitor in the '$r' position (dark or detached?)."
-                }
-            }
-        }
+        $targets = @(Resolve-DeskMonitor -Monitor $mons -Role $roles)
 
         foreach ($m in $targets) {
             $type = 0; $cur = 0; $max = 0
@@ -999,7 +1109,7 @@ function Set-MonitorOrientation {
 
     Windows repacks the desktop around the new shape, so neighbouring monitors may shift.
     .PARAMETER Role
-    Left, Center or Right. Positional.
+    Left, Center or Right. Positional, and optional when only one monitor is attached.
     .PARAMETER Orientation
     Landscape, Portrait, LandscapeFlipped or PortraitFlipped. Positional. Omit to toggle
     between Landscape and Portrait.
@@ -1008,25 +1118,43 @@ function Set-MonitorOrientation {
     .EXAMPLE
     rot Right            # toggle
     .EXAMPLE
+    rot Portrait         # single-monitor machine
+    .EXAMPLE
     Set-MonitorOrientation -Role Right -Orientation Landscape
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory, Position = 0)][ValidateSet('Left', 'Center', 'Right')][string]$Role,
+        [Parameter(Position = 0)]
+        [ArgumentCompleter({ param($c, $p, $word) $script:DeskRoles | Where-Object { $_ -like "$word*" } })]
+        [string]$Role,
         [Parameter(Position = 1)][ValidateSet('Landscape', 'Portrait', 'LandscapeFlipped', 'PortraitFlipped')][string]$Orientation,
         [switch]$Quiet
     )
 
     $codes = @{ Landscape = 0; Portrait = 1; LandscapeFlipped = 2; PortraitFlipped = 3 }
 
-    $mons = Get-DeskMonitor
+    # "rot Portrait": a lone positional argument naming an orientation is the orientation,
+    # not a position. Orientation and role names do not overlap.
+    if (-not $Orientation -and $Role -and $codes.ContainsKey($Role)) {
+        $Orientation = $Role
+        $Role = ''
+    }
+    if ($Role -and $Role -notin $script:DeskRoles -and $Role -ne $script:SoleRole) {
+        throw "Unknown role '$Role'. Valid roles: $($script:DeskRoles -join ', ')."
+    }
+
+    $mons = @(Get-DeskMonitor)
     try {
-        $m = $null
-        foreach ($x in $mons) { if ($x.Role -eq $Role) { $m = $x; break } }
-        if (-not $m) {
-            Write-Warning "No DDC-capable monitor in the '$Role' position."
+        $matched = @(Resolve-DeskMonitor -Monitor $mons -Role $Role)
+        if ($matched.Count -eq 0) {
+            if ($mons.Count -eq 0) { Write-Warning 'No DDC-capable monitor found.' }
             return
         }
+        if ($matched.Count -gt 1) {
+            throw "Set-MonitorOrientation: more than one monitor is attached; name one of $(@($mons.Role) -join ', ')."
+        }
+        $m = $matched[0]
+        $Role = $m.Role
         $device = $m.Device
         $label = $m.Description
     }
@@ -1072,7 +1200,7 @@ Set-Alias -Name grot   -Value Get-MonitorOrientation -Force
 
 Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskProfile,
     Test-DeskProfileApplied, Start-DeskFollow, Register-DeskFollow, Unregister-DeskFollow,
-    Get-DeskMonitor, Close-DeskMonitorHandle, ConvertTo-DeskInputCode, ConvertFrom-DeskInputCode,
+    Get-DeskMonitor, Close-DeskMonitorHandle, Resolve-DeskMonitor, ConvertTo-DeskInputCode, ConvertFrom-DeskInputCode,
     Get-MonitorBrightness, Set-MonitorBrightness, Sync-MonitorBrightness,
     Get-LaptopBrightness, Set-LaptopBrightness,
     Start-BrightnessFollow, Register-BrightnessFollow, Unregister-BrightnessFollow,

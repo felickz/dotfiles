@@ -72,6 +72,13 @@ Two implementation details that matter:
 - **Roles are resolved by screen X position, not display index or model.** Windows
   renumbers `\\.\DISPLAYn` across docking and driver updates, and both side monitors are
   the same model, so neither index nor model can reliably identify "the left one".
+- **A machine that reaches one monitor does not need a role at all.** The personal laptop
+  is USB-C to the left panel and the Mac is USB-C to the right one, so each sees exactly
+  one DDC-capable monitor and there is nothing to choose between. A lone monitor is
+  reported as role `Only`, `smin DP` targets it without naming a position, and a role that
+  does not match - `smin Left DP` from the personal laptop - still lands on it. The
+  fallback is disabled when applying a profile that owns more than one position, so a
+  three-monitor profile can never drive one panel three times.
 - **A monitor already on the target input is skipped.** That is what makes the follow
   watcher safe to poll forever: while you work on one machine the monitors already
   match, so no DDC traffic is generated and nothing flickers. Work happens only on the
@@ -147,7 +154,9 @@ Register-DeskFollow       # or install it as a logon task (no admin needed)
 `Register-DeskFollow` runs unelevated on purpose: DDC/CI needs no administrator rights.
 
 On the **personal Surface Laptop 5**, install the same module and keep the same map. It
-resolves `personal` from its own hostname and claims only the left monitor.
+resolves `personal` from its own hostname and claims only the left monitor - and because
+that is the only monitor it can reach, `smin HDMI` and `smin Left HDMI` both work there
+without arguing about positions.
 
 ## macOS setup (Mac M5 Pro)
 
@@ -174,6 +183,10 @@ swmon pc            # input 15: DisplayPort 1, connected to the main Windows PC
 swmon mac           # input 27: USB-C, connected to this Mac
 ```
 
+The display index is `auto` by default, matching the Windows side: this Mac is USB-C to a
+single monitor, so the one it can see is used and no index has to be named. Pass one
+(`swmon pc 2`) or set `DESK_MONITOR_DISPLAY` only if several are ever attached.
+
 The installer links the command into `~/.local/bin` and links the repository's
 `.zshrc` to `~/.zshrc`; the implementation and configuration remain in this
 repository and are therefore version controlled. If DDPM is absent, the wrapper can fall back to
@@ -192,6 +205,7 @@ grot                    # how each monitor is currently rotated
 rot Right Portrait      # turn the right monitor vertical
 rot Right               # toggle back (bare = flip landscape <-> portrait)
 rot Right Landscape     # explicit
+rot Portrait            # no role needed when only one monitor is attached
 ```
 
 Rotation is a **Windows display-config change, not a DDC one** - the monitor panel itself
@@ -220,6 +234,8 @@ Register-BrightnessFollow        # ...and do that from every logon (no admin)
 
 The first argument is positional throughout, so `smb 40` and `smin Right HDMI` work without
 naming parameters. The named forms (`smb -Percent 40 -Role Center`) still bind as before.
+The role is optional as well: `smin DP` and `rot Portrait` are enough on a machine wired
+to a single monitor.
 
 **Dell Display and Peripheral Manager is not involved.** Brightness is the MCCS
 "Luminance" control, VCP `0x10`, on the same DDC/CI channel as input switching, so it works

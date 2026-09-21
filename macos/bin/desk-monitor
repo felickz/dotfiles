@@ -9,7 +9,10 @@ if [ -r "$config_file" ]; then
 fi
 
 : "${DESK_MONITOR_BACKEND:=auto}"
-: "${DESK_MONITOR_DISPLAY:=1}"
+# "auto" means: if this Mac can only see one DDC-capable display, use it. A machine wired
+# to a single monitor over USB-C has nothing to choose between, so neither the config nor
+# the command line should have to name an index. Set a concrete value to pin it.
+: "${DESK_MONITOR_DISPLAY:=auto}"
 : "${DESK_MONITOR_MAC_SOURCE:=USB-C}"
 : "${DESK_MONITOR_PC_SOURCE:=DP}"
 : "${DESK_MONITOR_MAC_INPUT:=27}"
@@ -18,12 +21,15 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: desk-monitor <mac|pc|status|list>
+Usage: desk-monitor <mac|pc|status|list> [display]
 
   mac     Switch the configured display to USB-C
   pc      Switch the configured display to DisplayPort
   status  Show the configured display's active input
   list    List displays detected by the selected backend
+
+The display is optional. When only one DDC-capable display is attached it is used
+automatically; name one only when this Mac can see several.
 
 Configuration:
   ~/.config/dotfiles/macos/desk-monitor.conf
@@ -71,9 +77,72 @@ run_ddpm() {
     printf '%s\n' "$output" | grep -q '"Result": "PASS"'
 }
 
+# Number of displays the backend reports, and the identifier of the first one. Both are
+# empty when the backend cannot be asked, which resolve_display treats as "unknown" rather
+# than "none".
+detect_displays() {
+    display_count=
+    display_first=
+
+    if [ "$backend" = ddpm ]; then
+        # DDPM indexes displays from 1, so a lone display is always index 1. The reply is
+        # JSON-ish; accept either the named count or a generic value field.
+        display_count=$("$DDPM_BIN" /get -Display=MonitorCount 2>/dev/null | tr -d '\r' |
+            sed -n -e 's/.*"MonitorCount"[^0-9]*\([0-9][0-9]*\).*/\1/p' \
+                   -e 's/.*"Value"[^0-9]*\([0-9][0-9]*\).*/\1/p' |
+            head -n 1)
+        display_first=1
+    else
+        # m1ddc prints one bracketed index per display, e.g. "[1] DELL P2725DE". A
+        # successful call with no matches really does mean zero displays; a failed call
+        # means unknown, which is why the command status is kept separate from the parse.
+        if ids=$(m1ddc display list 2>/dev/null); then
+            ids=$(printf '%s\n' "$ids" | tr -d '\r' |
+                sed -n 's/^[[:space:]]*\[\([0-9][0-9]*\)\].*/\1/p')
+            display_count=$(printf '%s\n' "$ids" | grep -c '^[0-9]' || true)
+            display_first=$(printf '%s\n' "$ids" | head -n 1)
+        fi
+    fi
+}
+
+# Mirrors the Windows side (Resolve-DeskMonitor in DeskSwitch.psm1): one display means
+# there is nothing to choose between, so pick it instead of demanding an index.
+resolve_display() {
+    case $DESK_MONITOR_DISPLAY in
+        ''|auto|AUTO|Auto) ;;
+        *) return 0 ;;
+    esac
+
+    detect_displays
+
+    case $display_count in
+        1)
+            DESK_MONITOR_DISPLAY=$display_first
+            ;;
+        0)
+            printf 'desk-monitor: no DDC-capable display detected.\n' >&2
+            exit 1
+            ;;
+        '')
+            printf '%s\n' \
+                "desk-monitor: could not detect displays; assuming display 1." \
+                "Set DESK_MONITOR_DISPLAY in the config to pin one." >&2
+            DESK_MONITOR_DISPLAY=1
+            ;;
+        *)
+            printf '%s\n' \
+                "desk-monitor: $display_count displays detected - name one, e.g. 'desk-monitor pc 2'," \
+                "or set DESK_MONITOR_DISPLAY. Run 'desk-monitor list' to see them." >&2
+            exit 2
+            ;;
+    esac
+}
+
 set_input() {
     source_name=$1
     input_code=$2
+
+    resolve_display
 
     case $input_code in
         ''|*[!0-9]*)
@@ -93,6 +162,11 @@ set_input() {
 
 select_backend
 
+# An explicit display may follow the action: "desk-monitor pc 2".
+if [ $# -ge 2 ] && [ -n "$2" ]; then
+    DESK_MONITOR_DISPLAY=$2
+fi
+
 case ${1:-} in
     mac)
         set_input "$DESK_MONITOR_MAC_SOURCE" "$DESK_MONITOR_MAC_INPUT"
@@ -101,6 +175,7 @@ case ${1:-} in
         set_input "$DESK_MONITOR_PC_SOURCE" "$DESK_MONITOR_PC_INPUT"
         ;;
     status)
+        resolve_display
         if [ "$backend" = ddpm ]; then
             run_ddpm /get -Display=ActiveInputSource "-Index=$DESK_MONITOR_DISPLAY"
         else
