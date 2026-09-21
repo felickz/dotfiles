@@ -628,7 +628,7 @@ if ($deskModule) { Import-Module $deskModule -Force -DisableNameChecking }
 $Global:DeskProfiles = [ordered]@{
     main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
     mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
-    personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'HDMI' } }
+    personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'USBC' } }
 }
 
 function Switch-MonitorSetup {
@@ -1019,6 +1019,10 @@ $functions = @(
     @{ Alias = "syncbr";  Name = "Sync-MonitorBrightness";       Desc = "Match externals to the laptop panel now (syncbr -10 biases them)" }
     @{ Alias = "rot";     Name = "Set-MonitorOrientation";       Desc = "Rotate a monitor, e.g. rot Right Portrait | rot Portrait | rot Right (toggle)" }
     @{ Alias = "grot";    Name = "Get-MonitorOrientation";       Desc = "Show how each monitor is currently rotated" }
+    @{ Alias = "gown";    Name = "Get-DeskOwnership";            Desc = "Which monitors this PC actually drives (Owned=False means another machine has it)" }
+    @{ Alias = "syncmon"; Name = "Sync-DeskAttachment";          Desc = "Drop monitors another machine took, re-attach ones we got back" }
+    @{ Alias = "autodetach"; Name = "Set-DeskAutoDetach";        Desc = "Toggle auto-detach live: autodetach On | Off" }
+    @{ Alias = "";        Name = "Start-DeskGuard";              Desc = "Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon)" }
     @{ Alias = "";        Name = "Start-BrightnessFollow";       Desc = "Externals track the laptop brightness keys (Register-BrightnessFollow = at logon)" }
     @{ Alias = "";        Name = "Start-DeskFollow";             Desc = "Claim this machine's monitors when you type here (Register-DeskFollow = at logon)" }
     @{ Alias = "ccu";     Name = "Check-CopilotUpdates";         Desc = "Check for Copilot CLI updates" }

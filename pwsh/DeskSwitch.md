@@ -99,38 +99,11 @@ machine that is *leaving* hand the monitor back while its own input is still act
 (e.g. the Mac sets the right monitor to DP once it has been idle for a while), rather
 than the returning machine reclaiming it.
 
-## Known gap: the desktop still extends onto a handed-over monitor
+## Handing a monitor over
 
-Switching a monitor's input is only half a handover. The DP link stays trained, so Windows
-keeps extending the desktop onto a screen you can no longer see: the mouse disappears into
-it and windows land there invisibly. A complete handover also has to detach the monitor
-from the Windows display config, and re-attach it on the way back.
-
-This is **not implemented yet**. What was established while trying:
-
-- **Detach works** via `ChangeDisplaySettingsEx` with a zeroed DEVMODE, and a
-  detach/re-attach round trip on a non-primary monitor restored the layout
-  byte-identically.
-- **`SDC_TOPOLOGY_EXTEND` cannot undo a detach.** Detaching also rewrites the saved
-  topology, so "extend" afterwards means "extend across whatever is still attached". Ten
-  attempts never brought the monitor back. Re-attaching needs an explicit DEVMODE.
-- **Detach wipes the saved mode.** Afterwards `EnumDisplaySettings` reports 0x0, so the
-  geometry must be captured *before* detaching or there is nothing to restore from.
-- **A detached monitor is unreachable over DDC.** It leaves the HMONITOR enumeration, so
-  there is no handle for VCP commands. That forces the ordering:
-  release = switch input, then detach; reclaim = attach, then switch input.
-- **A monitor showing a dead input also stops answering DDC**, so role lookup cannot
-  depend on DDC at handover time - the mapping has to be cached while healthy.
-- **Windows silently refuses to detach the PRIMARY display.** The call reports success and
-  nothing changes, and the subsequent re-attach fails with `DISP_CHANGE_FAILED`. Another
-  monitor has to be promoted to primary first.
-
-Practical note: repeated detach/attach cycles left the display registry unsettled, and
-DDC reads on the ultrawide became intermittent until things were switched back to
-DisplayPort. Worth doing this work against a spare monitor rather than a primary.
-
-Until it is implemented, after handing a monitor over use Win+P or Settings > Display to
-drop it from the desktop manually.
+Implemented - see "Ownership and auto-detach" below. A handover both switches the input
+and drops the monitor from this desktop, so neither the cursor nor a window can land on
+a screen that is showing another machine.
 
 ## Windows setup (main and personal)
 
@@ -218,6 +191,80 @@ mode against the requested orientation, so a 2560x1440 panel has to be asked for
 when turned on its side.
 
 Windows repacks the desktop around the new shape, so neighbouring monitors may shift.
+
+## Ownership and auto-detach
+
+```powershell
+gown                 # who actually drives each monitor right now
+syncmon              # drop monitors another machine took, re-attach ones we got back
+autodetach Off       # pause it for a quick hop to the other machine
+autodetach On
+
+Start-DeskGuard      # watch continuously
+Register-DeskGuard   # ...and do that from every logon (no admin)
+```
+
+Switching a monitor's input is only half a handover. The cable this machine is on stays
+trained, so Windows keeps extending the desktop onto a panel that is now showing another
+machine: the cursor vanishes into it and windows land there invisibly. That happens in both
+directions, so the same fix is needed on the side machines too.
+
+Detection works because these Dells keep answering DDC over an **inactive** cable. This
+machine reads VCP `0x60`, sees `USBC` on a monitor it reaches over DisplayPort, and
+concludes someone else owns it:
+
+```
+Role   Monitor                        Input Expected Owned
+Left   Dell P2725DE (DisplayPort 1_4) USBC  DP       False
+Center Dell P3425WE(DisplayPort 1.4)  DP    DP       True
+```
+
+`Expected` comes from the `$DeskProfiles` entry matching this hostname - the map already
+records which cable each machine is on, so ownership needs no extra configuration. A role
+with no profile entry reports `Owned` as null and is never touched.
+
+### Why it polls
+
+Windows raises no event for this. The input switch happens entirely inside the monitor, so
+the display configuration never changes and there is nothing to subscribe to. Reading
+VCP `0x60` on a timer is the only way to notice.
+
+The poll is cheap: it stops after the read unless ownership actually changed.
+
+### The grace period
+
+A monitor must look unowned for `DetachDelaySeconds` (default 20) before it is dropped, so
+hopping to another machine and straight back does not reflow the desktop twice. Settings
+live in `%LOCALAPPDATA%\deskswitch-config.json` and are re-read every pass, so
+`autodetach Off` takes effect immediately in a guard that is already running - it does not
+need restarting.
+
+### Re-attaching is deliberate, not automatic
+
+A detached monitor leaves the HMONITOR enumeration entirely, so it cannot answer DDC and
+the guard cannot see it come back. Take monitors back explicitly:
+
+```powershell
+smin Left DP     # re-attaches first, then switches the input
+swdesk           # same, for every monitor this machine owns
+syncmon          # re-attach anything previously detached
+```
+
+`Set-MonitorInput` handles both directions: asking for an input this machine owns
+re-attaches first, and handing a monitor to another machine detaches it afterwards.
+
+### Constraints worth knowing
+
+- Detaching **wipes** the display's saved mode, and rewrites the saved topology so
+  `SDC_TOPOLOGY_EXTEND` will not undo it. Geometry is saved to
+  `%LOCALAPPDATA%\deskswitch-detached.json` before detaching and replayed on the way back.
+- Windows silently refuses to detach the **primary** display: the call reports success and
+  nothing changes. That case is refused up front rather than appearing to work.
+- Roles are worked out from screen X **including** detached monitors, so handing over the
+  left panel does not silently promote the centre one to "Left".
+- The watchers run as `-NoProfile` scheduled tasks, where `$DeskProfiles` does not exist.
+  Registering one snapshots the map to `%LOCALAPPDATA%\deskswitch-profiles.json`. After
+  editing `$DeskProfiles`, run `Save-DeskProfileMap` to refresh it.
 
 ## Brightness
 

@@ -59,6 +59,10 @@ $script:RequiredNativeMethods = @(
     'IdleMilliseconds'
     'GetOrientation'
     'SetOrientation'
+    'GetMode'
+    'Detach'
+    'Attach'
+    'ListAttached'
 )
 
 if ('DeskSwitch.Native' -as [type]) {
@@ -118,6 +122,16 @@ namespace DeskSwitch {
         public uint dmPanningWidth, dmPanningHeight;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DISPLAY_DEVICE {
+        public int cb;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]  public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public uint StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+
     public class Native {
         public const uint DM_POSITION            = 0x00000020;
         public const uint DM_DISPLAYORIENTATION  = 0x00000080;
@@ -126,13 +140,99 @@ namespace DeskSwitch {
         public const uint DM_PELSHEIGHT          = 0x00100000;
         public const uint DM_DISPLAYFREQUENCY    = 0x00400000;
         public const uint CDS_UPDATEREGISTRY     = 0x00000001;
+        public const uint CDS_NORESET            = 0x10000000;
         public const int  ENUM_CURRENT_SETTINGS  = -1;
+        public const uint DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x00000001;
+        public const uint DISPLAY_DEVICE_PRIMARY_DEVICE      = 0x00000004;
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern int ChangeDisplaySettingsEx(string dev, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr p);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int ChangeDisplaySettingsEx(IntPtr dev, IntPtr dm, IntPtr hwnd, uint flags, IntPtr p);
+
+        // IntPtr overload so the adapter enumeration can pass a real NULL; a null string
+        // parameter does not reliably marshal as NULL from PowerShell.
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern bool EnumDisplayDevices(IntPtr dev, uint num, ref DISPLAY_DEVICE info, uint flags);
+
+        /// Current mode of a display as "x,y,w,h,hz". Must be captured BEFORE detaching:
+        /// the zeroed-DEVMODE detach also wipes the display's saved mode, so afterwards
+        /// EnumDisplaySettings reports 0x0 and there is nothing left to restore from.
+        public static string GetMode(string device) {
+            var dm = new DEVMODE();
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            if (!EnumDisplaySettings(device, ENUM_CURRENT_SETTINGS, ref dm)) return null;
+            if (dm.dmPelsWidth == 0) return null;
+            return dm.dmPositionX + "," + dm.dmPositionY + "," + dm.dmPelsWidth + "," +
+                   dm.dmPelsHeight + "," + dm.dmDisplayFrequency;
+        }
+
+        /// Every attached display as "device|x|y|w|h|hz|primary". GDI only, so it keeps
+        /// working for a monitor that has gone dark and stopped answering DDC.
+        public static List<string> ListAttached() {
+            var list = new List<string>();
+            for (uint i = 0; i < 32; i++) {
+                var dd = new DISPLAY_DEVICE();
+                dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+                if (!EnumDisplayDevices(IntPtr.Zero, i, ref dd, 0)) break;
+                if (string.IsNullOrEmpty(dd.DeviceName)) continue;
+                if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) continue;
+
+                var dm = new DEVMODE();
+                dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+                if (!EnumDisplaySettings(dd.DeviceName, ENUM_CURRENT_SETTINGS, ref dm)) continue;
+
+                bool primary = (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
+                list.Add(dd.DeviceName + "|" + dm.dmPositionX + "|" + dm.dmPositionY + "|" +
+                         dm.dmPelsWidth + "|" + dm.dmPelsHeight + "|" + dm.dmDisplayFrequency + "|" +
+                         (primary ? "1" : "0"));
+            }
+            return list;
+        }
+
+        /// Removes a display from the desktop by applying a DEVMODE whose width, height and
+        /// position are all zero. Windows silently refuses to do this to the PRIMARY display:
+        /// the call reports success and nothing changes, so callers must check.
+        public static int Detach(string device) {
+            var dm = new DEVMODE();
+            dm.dmDeviceName = device;
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+            dm.dmPelsWidth = 0;
+            dm.dmPelsHeight = 0;
+            dm.dmPositionX = 0;
+            dm.dmPositionY = 0;
+            int rc = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+            if (rc != 0) return rc;
+            // A null device commits every pending CDS_NORESET change at once.
+            return ChangeDisplaySettingsEx(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+        }
+
+        /// Re-attaches a display with explicit geometry.
+        ///
+        /// SDC_TOPOLOGY_EXTEND cannot do this: detaching also rewrites the saved topology, so
+        /// "extend" afterwards means "extend across whatever is still attached" and the
+        /// detached display never returns.
+        public static int Attach(string device, int x, int y, int w, int h, int hz) {
+            var dm = new DEVMODE();
+            dm.dmDeviceName = device;
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            dm.dmPelsWidth = (uint)w;
+            dm.dmPelsHeight = (uint)h;
+            dm.dmBitsPerPel = 32;
+            dm.dmDisplayFrequency = (uint)hz;
+            dm.dmPositionX = x;
+            dm.dmPositionY = y;
+            dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+
+            int rc = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+            if (rc != 0) return rc;
+            return ChangeDisplaySettingsEx(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+        }
 
         /// Current orientation of a display: 0 landscape, 1 portrait (90), 2 landscape
         /// flipped (180), 3 portrait flipped (270). -1 if it cannot be read.
@@ -322,16 +422,29 @@ function Get-DeskMonitor {
         }
     }
 
-    # Assign left/center/right by X order across however many DDC monitors are present.
-    # A single monitor gets 'Only' rather than a made-up position: this machine can reach
-    # just the one panel, wherever it physically sits.
-    $sorted = @($result | Sort-Object X)
-    for ($i = 0; $i -lt $sorted.Count; $i++) {
-        $sorted[$i].Role = if ($sorted.Count -eq 1) { $script:SoleRole }
-            elseif ($i -eq 0) { 'Left' }
-            elseif ($i -eq $sorted.Count - 1) { 'Right' }
-            else { 'Center' }
+    # Assign left/center/right by X order. Detached monitors are folded back in by their
+    # saved X, so roles do not shift when one is handed to another machine: without this,
+    # detaching the left panel would silently promote the centre one to "Left" and every
+    # ownership comparison after that would be against the wrong profile entry.
+    #
+    # A single monitor with nothing detached gets 'Only' rather than a made-up position:
+    # this machine can reach just the one panel, wherever it physically sits.
+    $slots = @()
+    foreach ($m in $result) { $slots += [pscustomobject]@{ X = [int]$m.X; Live = $m } }
+    foreach ($d in (Get-DeskDetachedState).Values) {
+        $slots += [pscustomobject]@{ X = [int]$d.X; Live = $null }
     }
+    $ordered = @($slots | Sort-Object X)
+    $total = $ordered.Count
+    for ($i = 0; $i -lt $total; $i++) {
+        $role = if ($total -eq 1) { $script:SoleRole }
+            elseif ($i -eq 0) { 'Left' }
+            elseif ($i -eq $total - 1) { 'Right' }
+            else { 'Center' }
+        if ($ordered[$i].Live) { $ordered[$i].Live.Role = $role }
+    }
+
+    $sorted = @($result | Sort-Object X)
 
     $script:LastHandleSets = $handles
     $sorted
@@ -508,11 +621,27 @@ function Set-MonitorInput {
 
     $code = ConvertTo-DeskInputCode $Source
     $name = ConvertFrom-DeskInputCode $code
+
+    # Reclaiming: a detached monitor has no HMONITOR and cannot be found over DDC, so if the
+    # requested input is the one this machine owns, put it back on the desktop first.
+    foreach ($d in @((Get-DeskDetachedState).GetEnumerator())) {
+        if ($roles.Count -and $d.Key -notin $roles) { continue }
+        $want = (Get-DeskExpectedInput)[$d.Key]
+        if ($want -and (ConvertTo-DeskInputCode $want) -eq $code) {
+            if (-not $Quiet) { Write-Host "  $($d.Key) was detached; re-attaching before switching input." -ForegroundColor DarkGray }
+            [void](Set-DeskMonitorAttached -Role $d.Key -Attached $true -Quiet:$Quiet)
+            Start-Sleep -Seconds 2
+        }
+    }
+
     $mons = @(Get-DeskMonitor)
     $changed = 0
+    $handedOff = @()
 
     try {
         if ($mons.Count -eq 0) { Write-Warning 'No DDC-capable monitor found.' }
+
+        $expected = Get-DeskExpectedInput -Monitor $mons
 
         foreach ($m in Resolve-DeskMonitor -Monitor $mons -Role $roles -ExactRole:$ExactRole) {
             if ($m.InputCode -eq $code) {
@@ -528,9 +657,20 @@ function Set-MonitorInput {
             }
             $changed++
             if (-not $Quiet) { Write-Host "  $($m.Role) ($($m.Description)) -> $name" -ForegroundColor Green }
+
+            # Handed to another machine: note it for detaching once DDC work is finished.
+            $want = if ($expected.ContainsKey($m.Role)) { $expected[$m.Role] } else { $null }
+            if ($want -and $name -ne $want) { $handedOff += $m.Role }
         }
     }
     finally { Close-DeskMonitorHandle $script:LastHandleSets }
+
+    # After the handles are released, so the detach cannot race the DDC session.
+    if ($handedOff -and (Get-DeskConfig).AutoDetach) {
+        foreach ($role in $handedOff) {
+            [void](Set-DeskMonitorAttached -Role $role -Attached $false -Quiet:$Quiet)
+        }
+    }
 
     $changed
 }
@@ -559,20 +699,21 @@ function Switch-DeskProfile {
         [switch]$Quiet
     )
 
-    if (-not $Global:DeskProfiles) { throw 'No $Global:DeskProfiles defined.' }
+    $profiles = Get-DeskProfileMap
+    if (-not $profiles) { throw 'No desk profiles available ($DeskProfiles is unset and nothing is saved on disk).' }
 
     if (-not $Name) {
-        $Name = ($Global:DeskProfiles.GetEnumerator() |
+        $Name = ($profiles.GetEnumerator() |
             Where-Object { $_.Value.HostName -eq $env:COMPUTERNAME } |
             Select-Object -First 1).Key
         if (-not $Name) { throw "No profile matches host '$env:COMPUTERNAME'. Pass -Name explicitly." }
     }
 
-    if (-not $Global:DeskProfiles.Contains($Name)) {
-        throw "Unknown profile '$Name'. Available: $($Global:DeskProfiles.Keys -join ', ')"
+    if (-not $profiles.Contains($Name)) {
+        throw "Unknown profile '$Name'. Available: $($profiles.Keys -join ', ')"
     }
 
-    $deskProfile = $Global:DeskProfiles[$Name]
+    $deskProfile = $profiles[$Name]
     if (-not $Quiet) { Write-Host "Applying desk profile '$Name'..." -ForegroundColor Cyan }
 
     # A profile that owns several positions must match them exactly, or a machine currently
@@ -597,7 +738,9 @@ function Test-DeskProfileApplied {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name)
 
-    $deskProfile = $Global:DeskProfiles[$Name]
+    $profiles = Get-DeskProfileMap
+    if (-not $profiles -or -not $profiles.Contains($Name)) { return $false }
+    $deskProfile = $profiles[$Name]
     $mons = @(Get-DeskMonitor)
     $exact = $deskProfile.Monitors.Count -gt 1
     try {
@@ -650,7 +793,9 @@ function Start-DeskFollow {
     )
 
     if (-not $Name) {
-        $Name = ($Global:DeskProfiles.GetEnumerator() |
+        $profiles = Get-DeskProfileMap
+        if (-not $profiles) { throw 'No desk profiles available ($DeskProfiles is unset and nothing is saved on disk).' }
+        $Name = ($profiles.GetEnumerator() |
             Where-Object { $_.Value.HostName -eq $env:COMPUTERNAME } |
             Select-Object -First 1).Key
     }
@@ -693,6 +838,9 @@ function Register-DeskFollow {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
     if ($PSCmdlet.ShouldProcess($TaskName, 'Register logon task')) {
+        # The task runs -NoProfile, so $DeskProfiles will not exist in it. Snapshot the
+        # map to disk now, or the watcher silently matches no profile and does nothing.
+        Save-DeskProfileMap -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
             -Settings $settings -Force | Out-Null
         Write-Host "Registered '$TaskName' to start at logon." -ForegroundColor Green
@@ -1050,6 +1198,9 @@ function Register-BrightnessFollow {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
     if ($PSCmdlet.ShouldProcess($TaskName, 'Register logon task')) {
+        # The task runs -NoProfile, so $DeskProfiles will not exist in it. Snapshot the
+        # map to disk now, or the watcher silently matches no profile and does nothing.
+        Save-DeskProfileMap -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
             -Settings $settings -Force | Out-Null
         Write-Host "Registered '$TaskName' to start at logon." -ForegroundColor Green
@@ -1189,6 +1340,579 @@ function Set-MonitorOrientation {
     1
 }
 
+# ─── Ownership and auto-detach ─────────────────────────────────────
+# Switching a monitor's input is only half a handover. The cable this machine is on stays
+# trained, so Windows keeps extending the desktop onto a panel that is now showing another
+# machine: the cursor disappears into it and windows land there invisibly.
+#
+# Detection is possible because these Dells keep answering DDC over an INACTIVE cable. So
+# this machine can read VCP 0x60 and see "USBC" on a monitor it reaches over DisplayPort,
+# which means "someone else owns this right now".
+#
+# Config lives in a file rather than a shell variable because the guard usually runs as a
+# scheduled task, in a different process from the shell where the toggle is flipped. The
+# guard re-reads it every pass, so toggling takes effect live without a restart.
+
+$script:DeskConfigFile   = Join-Path $env:LOCALAPPDATA 'deskswitch-config.json'
+$script:DeskDetachedFile = Join-Path $env:LOCALAPPDATA 'deskswitch-detached.json'
+$script:DeskProfileFile  = Join-Path $env:LOCALAPPDATA 'deskswitch-profiles.json'
+
+function Get-DeskProfileMap {
+    <#
+    .SYNOPSIS
+    The desk profile map, from the shell if present and from disk otherwise.
+    .DESCRIPTION
+    $DeskProfiles is defined in the PowerShell profile, but the guard and the follow
+    watchers run as scheduled tasks started with -NoProfile, so that variable does not
+    exist in their process. Without a fallback those tasks would silently never match a
+    profile and quietly do nothing.
+
+    Register-DeskGuard, Register-DeskFollow and Register-BrightnessFollow therefore snapshot
+    the map to disk when they register, and this reads it back.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (Get-Variable -Name DeskProfiles -Scope Global -ErrorAction SilentlyContinue) {
+        if ($Global:DeskProfiles) { return $Global:DeskProfiles }
+    }
+
+    if (-not (Test-Path $script:DeskProfileFile)) { return $null }
+    try {
+        $raw = Get-Content $script:DeskProfileFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        $map = [ordered]@{}
+        foreach ($p in $raw.PSObject.Properties) {
+            $mons = [ordered]@{}
+            foreach ($mp in $p.Value.Monitors.PSObject.Properties) { $mons[$mp.Name] = $mp.Value }
+            $map[$p.Name] = @{ HostName = $p.Value.HostName; Monitors = $mons }
+        }
+        return $map
+    }
+    catch {
+        Write-Verbose "Ignoring unreadable $($script:DeskProfileFile): $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Save-DeskProfileMap {
+    <#
+    .SYNOPSIS
+    Snapshots $DeskProfiles to disk so -NoProfile scheduled tasks can read it.
+    .DESCRIPTION
+    Called automatically when a watcher is registered. Re-run it by hand after editing
+    $DeskProfiles if a watcher is already registered.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
+    if (-not (Get-Variable -Name DeskProfiles -Scope Global -ErrorAction SilentlyContinue) -or -not $Global:DeskProfiles) {
+        Write-Warning 'No $DeskProfiles defined in this shell; nothing to save.'
+        return
+    }
+    if (-not $PSCmdlet.ShouldProcess($script:DeskProfileFile, 'Save desk profile map')) { return }
+
+    $out = [ordered]@{}
+    foreach ($e in $Global:DeskProfiles.GetEnumerator()) {
+        $mons = [ordered]@{}
+        foreach ($m in $e.Value.Monitors.GetEnumerator()) { $mons[$m.Key] = $m.Value }
+        $out[$e.Key] = [ordered]@{ HostName = $e.Value.HostName; Monitors = $mons }
+    }
+    $out | ConvertTo-Json -Depth 6 | Set-Content $script:DeskProfileFile -Encoding utf8
+    Write-Verbose "Saved desk profiles to $($script:DeskProfileFile)."
+}
+
+$script:DeskConfigDefaults = [ordered]@{
+    # Detach monitors this machine does not own. The whole point of the guard, but easy to
+    # turn off for a session where the reflow is more annoying than the hidden desktop.
+    AutoDetach         = $true
+    # Grace period before detaching. A quick hop to another machine and straight back costs
+    # nothing if it fits inside this window, which avoids windows reflowing twice.
+    DetachDelaySeconds = 20
+    # How often the guard reads the monitors. DDC is slow and the bus dislikes hammering.
+    PollSeconds        = 5
+}
+
+function Get-DeskConfig {
+    <#
+    .SYNOPSIS
+    Current DeskSwitch guard settings, merged over the defaults.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $cfg = [ordered]@{}
+    foreach ($k in $script:DeskConfigDefaults.Keys) { $cfg[$k] = $script:DeskConfigDefaults[$k] }
+
+    if (Test-Path $script:DeskConfigFile) {
+        try {
+            $saved = Get-Content $script:DeskConfigFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            foreach ($p in $saved.PSObject.Properties) {
+                if ($cfg.Contains($p.Name)) { $cfg[$p.Name] = $p.Value }
+            }
+        }
+        catch { Write-Verbose "Ignoring unreadable $($script:DeskConfigFile): $($_.Exception.Message)" }
+    }
+    [pscustomobject]$cfg
+}
+
+function Set-DeskConfig {
+    <#
+    .SYNOPSIS
+    Updates one or more guard settings and persists them.
+    .EXAMPLE
+    Set-DeskConfig -DetachDelaySeconds 45
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [nullable[bool]]$AutoDetach,
+        [ValidateRange(0, 600)][nullable[int]]$DetachDelaySeconds,
+        [ValidateRange(1, 300)][nullable[int]]$PollSeconds
+    )
+
+    $cfg = Get-DeskConfig
+    if ($null -ne $AutoDetach)         { $cfg.AutoDetach         = [bool]$AutoDetach }
+    if ($null -ne $DetachDelaySeconds) { $cfg.DetachDelaySeconds = [int]$DetachDelaySeconds }
+    if ($null -ne $PollSeconds)        { $cfg.PollSeconds        = [int]$PollSeconds }
+
+    if (-not $PSCmdlet.ShouldProcess($script:DeskConfigFile, 'Save DeskSwitch settings')) { return $cfg }
+
+    $cfg | ConvertTo-Json -Depth 4 | Set-Content $script:DeskConfigFile -Encoding utf8
+    $cfg
+}
+
+function Set-DeskAutoDetach {
+    <#
+    .SYNOPSIS
+    Turns auto-detach on or off. Takes effect immediately, including in a running guard.
+    .DESCRIPTION
+    Off is the escape hatch for "I am hopping to the other machine for ten seconds and do
+    not want the desktop reflowing twice".
+    .EXAMPLE
+    Set-DeskAutoDetach Off
+    .EXAMPLE
+    autodetach On
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory, Position = 0)][ValidateSet('On', 'Off')][string]$State)
+
+    $enabled = $State -eq 'On'
+    $cfg = Set-DeskConfig -AutoDetach $enabled
+    Write-Host ("Auto-detach {0} (grace {1}s, poll {2}s)" -f `
+        $(if ($cfg.AutoDetach) { 'ON' } else { 'OFF' }), $cfg.DetachDelaySeconds, $cfg.PollSeconds) `
+        -ForegroundColor $(if ($cfg.AutoDetach) { 'Green' } else { 'Yellow' })
+    $cfg
+}
+
+function Get-DeskExpectedInput {
+    <#
+    .SYNOPSIS
+    Which input this machine expects to own, per desk role.
+    .DESCRIPTION
+    Read from the $DeskProfiles entry whose HostName matches this computer - the same map
+    Switch-DeskProfile applies. That map already encodes "which cable am I on", so ownership
+    needs no extra configuration.
+
+    A machine wired to a single panel reports the role 'Only', while its profile names a
+    position; when the profile owns exactly one monitor those are the same thing, so the
+    single entry is used whatever it is called.
+    #>
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][object[]]$Monitor = @())
+
+    $map = @{}
+    $profiles = Get-DeskProfileMap
+    if (-not $profiles) { return $map }
+
+    $mine = $null
+    foreach ($entry in $profiles.GetEnumerator()) {
+        if ($entry.Value.HostName -eq $env:COMPUTERNAME) { $mine = $entry.Value; break }
+    }
+    if (-not $mine) { return $map }
+
+    $owned = @($mine.Monitors.GetEnumerator())
+    foreach ($e in $owned) { $map[$e.Key] = $e.Value }
+
+    # Single-panel machine: its one monitor is whatever the profile's single entry names.
+    $mons = @($Monitor)
+    if ($owned.Count -eq 1 -and $mons.Count -eq 1 -and -not $map.ContainsKey($mons[0].Role)) {
+        $map[$mons[0].Role] = $owned[0].Value
+    }
+    $map
+}
+
+function Get-DeskOwnership {
+    <#
+    .SYNOPSIS
+    Shows, per monitor, whether this machine is the one currently driving it.
+    .DESCRIPTION
+    Owned is $true when the monitor's live input matches the input this machine is wired to,
+    $false when another machine has taken it, and $null when there is no profile entry for
+    that role - in which case nothing is ever detached, because no opinion exists.
+
+    Detached monitors cannot answer DDC at all, so they are listed from the saved state file
+    instead, with Attached = $false.
+    .EXAMPLE
+    gown
+    #>
+    [CmdletBinding()]
+    param()
+
+    $mons = @(Get-DeskMonitor)
+    try {
+        $expected = Get-DeskExpectedInput -Monitor $mons
+        foreach ($m in $mons) {
+            $want = if ($expected.ContainsKey($m.Role)) { $expected[$m.Role] } else { $null }
+            [PSCustomObject]@{
+                Role     = $m.Role
+                Monitor  = $m.Description
+                Device   = $m.Device
+                Input    = $m.Input
+                Expected = $want
+                Owned    = if ($want) { $m.Input -eq $want } else { $null }
+                Attached = $true
+                Primary  = $m.Primary
+            }
+        }
+    }
+    finally { Close-DeskMonitorHandle $script:LastHandleSets }
+
+    foreach ($d in (Get-DeskDetachedState).GetEnumerator()) {
+        [PSCustomObject]@{
+            Role     = $d.Key
+            Monitor  = 'detached'
+            Device   = $d.Value.Device
+            Input    = $null
+            Expected = $null
+            Owned    = $false
+            Attached = $false
+            Primary  = $false
+        }
+    }
+}
+
+function Get-DeskDetachedState {
+    <#
+    .SYNOPSIS
+    Role -> saved geometry for every display this module has detached.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $state = @{}
+    if (-not (Test-Path $script:DeskDetachedFile)) { return $state }
+    try {
+        $raw = Get-Content $script:DeskDetachedFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        foreach ($p in $raw.PSObject.Properties) { $state[$p.Name] = $p.Value }
+    }
+    catch { Write-Verbose "Ignoring unreadable $($script:DeskDetachedFile): $($_.Exception.Message)" }
+    $state
+}
+
+function Save-DeskDetachedState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$State)
+
+    if ($State.Count) { $State | ConvertTo-Json -Depth 5 | Set-Content $script:DeskDetachedFile -Encoding utf8 }
+    else { Remove-Item $script:DeskDetachedFile -Force -ErrorAction SilentlyContinue }
+}
+
+function Get-DeskAttachedDevice {
+    <#
+    .SYNOPSIS
+    Attached displays straight from GDI, which still works for a monitor gone dark.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $rows = @()
+    foreach ($line in [DeskSwitch.Native]::ListAttached()) {
+        $f = "$line" -split '\|'
+        if (@($f).Count -lt 7) { continue }
+        $rows += [pscustomobject]@{
+            Device  = $f[0]
+            X       = [int]$f[1]
+            Y       = [int]$f[2]
+            Width   = [int]$f[3]
+            Height  = [int]$f[4]
+            Hz      = [int]$f[5]
+            Primary = ($f[6] -eq '1')
+        }
+    }
+    , $rows
+}
+
+function Set-DeskMonitorAttached {
+    <#
+    .SYNOPSIS
+    Adds or removes a monitor from the Windows desktop without unplugging it.
+    .DESCRIPTION
+    Three constraints shape this, all measured rather than assumed:
+
+    1. Detaching WIPES the display's saved mode, and rewrites the saved topology so
+       SDC_TOPOLOGY_EXTEND will not bring it back. Geometry is therefore captured to a state
+       file BEFORE detaching and replayed explicitly on the way back.
+    2. A detached monitor is not reachable over DDC - it leaves the HMONITOR enumeration -
+       so the ordering is forced: release = switch input first, then detach; reclaim =
+       attach first, then switch input.
+    3. Windows silently refuses to detach the PRIMARY display: the call reports success and
+       nothing changes. That case is refused up front instead of appearing to work.
+    .PARAMETER Role
+    Left, Center, Right or Only.
+    .PARAMETER Attached
+    $false detaches; $true re-attaches using the geometry saved when it was detached.
+    .EXAMPLE
+    Set-DeskMonitorAttached -Role Left -Attached $false
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Role,
+        [Parameter(Mandatory, Position = 1)][bool]$Attached,
+        [switch]$Quiet
+    )
+
+    $state = Get-DeskDetachedState
+
+    if ($Attached) {
+        if (-not $state.ContainsKey($Role)) {
+            if (-not $Quiet) { Write-Host "  $Role is not recorded as detached." -ForegroundColor DarkGray }
+            return 0
+        }
+        $saved = $state[$Role]
+        if (-not $PSCmdlet.ShouldProcess("$Role - $($saved.Device)", 'Re-attach to desktop')) { return 0 }
+
+        $rc = [DeskSwitch.Native]::Attach($saved.Device, $saved.X, $saved.Y, $saved.Width, $saved.Height, $saved.Hz)
+        if ($rc -ne 0) {
+            Write-Warning "$Role : ChangeDisplaySettingsEx returned $rc (see DISP_CHANGE_* codes)."
+            return 0
+        }
+
+        $state.Remove($Role)
+        Save-DeskDetachedState -State $state
+        if (-not $Quiet) {
+            Write-Host "  $Role re-attached at $($saved.Width)x$($saved.Height) @ $($saved.X),$($saved.Y)" -ForegroundColor Green
+        }
+        return 1
+    }
+
+    # --- detach ---
+    $mons = @(Get-DeskMonitor)
+    $device = $null
+    $label = $Role
+    try {
+        foreach ($m in $mons) {
+            if ($m.Role -eq $Role) { $device = $m.Device; $label = $m.Description; break }
+        }
+    }
+    finally { Close-DeskMonitorHandle $script:LastHandleSets }
+
+    if (-not $device) {
+        Write-Warning "No DDC-capable monitor in the '$Role' position (already detached?)."
+        return 0
+    }
+
+    # NOT $attached: PowerShell variable names are case-insensitive, so that would be the
+    # [bool]$Attached parameter, and assigning an array to a [bool]-typed variable coerces
+    # it to $true - making the count 1 and refusing every detach.
+    $attachedDevices = Get-DeskAttachedDevice
+    if (@($attachedDevices).Count -le 1) {
+        Write-Warning 'Refusing to detach the only active display.'
+        return 0
+    }
+    foreach ($a in $attachedDevices) {
+        if ($a.Device -eq $device -and $a.Primary) {
+            Write-Warning "$Role ($device) is the PRIMARY display; Windows will not detach it. Make another monitor primary in Settings > Display first."
+            return 0
+        }
+    }
+
+    # Only chance to read this: the detach wipes it.
+    $mode = [DeskSwitch.Native]::GetMode($device)
+    if (-not $mode) {
+        Write-Warning "Could not read the current mode for $device; refusing to detach without a way back."
+        return 0
+    }
+    $parts = $mode -split ','
+
+    if (-not $PSCmdlet.ShouldProcess("$Role - $label [$device]", 'Detach from desktop')) { return 0 }
+
+    $state[$Role] = [ordered]@{
+        Device = $device
+        X      = [int]$parts[0]
+        Y      = [int]$parts[1]
+        Width  = [int]$parts[2]
+        Height = [int]$parts[3]
+        Hz     = [int]$parts[4]
+    }
+    Save-DeskDetachedState -State $state
+
+    $rc = [DeskSwitch.Native]::Detach($device)
+    if ($rc -ne 0) { Write-Warning "ChangeDisplaySettingsEx returned $rc for $device." }
+
+    Start-Sleep -Milliseconds 700
+    $stillOn = @(Get-DeskAttachedDevice | Where-Object { $_.Device -eq $device })
+    if (@($stillOn).Count -gt 0) {
+        Write-Warning "$device is still attached; nothing changed."
+        $state.Remove($Role)
+        Save-DeskDetachedState -State $state
+        return 0
+    }
+
+    if (-not $Quiet) {
+        Write-Host "  $Role ($label) detached - saved $($parts[2])x$($parts[3]) @ $($parts[0]),$($parts[1])" -ForegroundColor Green
+    }
+    1
+}
+
+function Sync-DeskAttachment {
+    <#
+    .SYNOPSIS
+    Brings the desktop in line with who actually owns each monitor.
+    .DESCRIPTION
+    Detaches every monitor another machine has taken, and re-attaches everything this module
+    detached earlier. Run it after taking monitors back, or any time the desktop and the
+    hardware have drifted apart.
+
+    Re-attaching happens first, because a monitor that is back on this machine's input has
+    to be on the desktop before anything else can see it.
+    .PARAMETER Force
+    Detach even when auto-detach is switched off.
+    .EXAMPLE
+    syncmon
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([switch]$Force, [switch]$Quiet)
+
+    $changed = 0
+
+    foreach ($role in @((Get-DeskDetachedState).Keys)) {
+        $changed += Set-DeskMonitorAttached -Role $role -Attached $true -Quiet:$Quiet
+    }
+    if ($changed) { Start-Sleep -Seconds 2 }
+
+    $cfg = Get-DeskConfig
+    if (-not $cfg.AutoDetach -and -not $Force) {
+        if (-not $Quiet) { Write-Host "  Auto-detach is off; not detaching. Use -Force or 'autodetach On'." -ForegroundColor DarkGray }
+        return $changed
+    }
+
+    foreach ($o in (Get-DeskOwnership)) {
+        if ($o.Attached -and $o.Owned -eq $false) {
+            $changed += Set-DeskMonitorAttached -Role $o.Role -Attached $false -Quiet:$Quiet
+        }
+    }
+
+    if (-not $Quiet -and $changed -eq 0) { Write-Host '  Desktop already matches monitor ownership.' -ForegroundColor DarkGray }
+    $changed
+}
+
+function Start-DeskGuard {
+    <#
+    .SYNOPSIS
+    Watches for another machine taking a monitor, and drops it from this desktop.
+    .DESCRIPTION
+    Windows raises no event for this. An input switch happens entirely inside the monitor,
+    so the display config never changes and there is nothing to subscribe to - the only way
+    to notice is to read VCP 0x60 periodically. The poll is cheap because it stops at the
+    first read: nothing is written unless ownership actually changed.
+
+    A monitor must look unowned for DetachDelaySeconds before it is dropped, so hopping to
+    another machine and straight back does not reflow the desktop twice.
+
+    Re-attaching is deliberately NOT automatic: a detached monitor leaves the HMONITOR
+    enumeration, so this loop cannot see it come back. Take monitors back with
+    "smin <role> <input>", "swdesk", or "syncmon", all of which attach first.
+
+    Settings are re-read every pass, so "autodetach Off" takes effect without restarting.
+    .EXAMPLE
+    Start-DeskGuard -Verbose
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-Host "DeskGuard watching. Ctrl+C to stop." -ForegroundColor Cyan
+    $unownedSince = @{}
+
+    while ($true) {
+        try {
+            $cfg = Get-DeskConfig
+
+            if (-not $cfg.AutoDetach) {
+                $unownedSince.Clear()
+                Start-Sleep -Seconds $cfg.PollSeconds
+                continue
+            }
+
+            $seen = @{}
+            foreach ($o in (Get-DeskOwnership)) {
+                if (-not $o.Attached) { continue }
+                $seen[$o.Role] = $true
+
+                if ($o.Owned -eq $false) {
+                    if (-not $unownedSince.ContainsKey($o.Role)) {
+                        $unownedSince[$o.Role] = Get-Date
+                        Write-Verbose "$($o.Role) shows $($o.Input), expected $($o.Expected). Waiting $($cfg.DetachDelaySeconds)s."
+                    }
+                    $waited = ((Get-Date) - $unownedSince[$o.Role]).TotalSeconds
+                    if ($waited -ge $cfg.DetachDelaySeconds) {
+                        Write-Host "$($o.Role) taken by another machine (input $($o.Input)) - detaching." -ForegroundColor Yellow
+                        [void](Set-DeskMonitorAttached -Role $o.Role -Attached $false -Quiet)
+                        $unownedSince.Remove($o.Role)
+                    }
+                }
+                elseif ($unownedSince.ContainsKey($o.Role)) {
+                    # Came back inside the grace period: no reflow, nothing to do.
+                    Write-Verbose "$($o.Role) returned before the grace period expired."
+                    $unownedSince.Remove($o.Role)
+                }
+            }
+
+            foreach ($role in @($unownedSince.Keys)) {
+                if (-not $seen.ContainsKey($role)) { $unownedSince.Remove($role) }
+            }
+        }
+        catch {
+            Write-Warning "DeskGuard: $($_.Exception.Message)"
+        }
+
+        Start-Sleep -Seconds (Get-DeskConfig).PollSeconds
+    }
+}
+
+function Register-DeskGuard {
+    <#
+    .SYNOPSIS
+    Runs Start-DeskGuard at logon as a per-user scheduled task.
+    .DESCRIPTION
+    Unelevated: neither DDC/CI nor ChangeDisplaySettingsEx needs administrator rights.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$TaskName = 'DeskGuard', [string]$ModulePath = $PSCommandPath)
+
+    $cmd = "Import-Module '$ModulePath'; Start-DeskGuard"
+    $action = New-ScheduledTaskAction -Execute 'pwsh.exe' `
+        -Argument "-NoProfile -WindowStyle Hidden -Command `"$cmd`""
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+
+    if ($PSCmdlet.ShouldProcess($TaskName, 'Register logon task')) {
+        # The task runs -NoProfile, so $DeskProfiles will not exist in it. Snapshot the
+        # map to disk now, or the watcher silently matches no profile and does nothing.
+        Save-DeskProfileMap -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+            -Settings $settings -Force | Out-Null
+        Write-Host "Registered '$TaskName' to start at logon." -ForegroundColor Green
+    }
+}
+
+function Unregister-DeskGuard {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$TaskName = 'DeskGuard')
+    if ($PSCmdlet.ShouldProcess($TaskName, 'Unregister task')) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "Removed '$TaskName'." -ForegroundColor Green
+    }
+}
+
 Set-Alias -Name swdesk -Value Switch-DeskProfile -Force
 Set-Alias -Name gmin   -Value Get-MonitorInput   -Force
 Set-Alias -Name smin   -Value Set-MonitorInput   -Force
@@ -1197,6 +1921,9 @@ Set-Alias -Name smb    -Value Set-MonitorBrightness  -Force
 Set-Alias -Name syncbr -Value Sync-MonitorBrightness -Force
 Set-Alias -Name rot    -Value Set-MonitorOrientation -Force
 Set-Alias -Name grot   -Value Get-MonitorOrientation -Force
+Set-Alias -Name gown       -Value Get-DeskOwnership   -Force
+Set-Alias -Name syncmon    -Value Sync-DeskAttachment -Force
+Set-Alias -Name autodetach -Value Set-DeskAutoDetach  -Force
 
 Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskProfile,
     Test-DeskProfileApplied, Start-DeskFollow, Register-DeskFollow, Unregister-DeskFollow,
@@ -1204,5 +1931,10 @@ Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskPro
     Get-MonitorBrightness, Set-MonitorBrightness, Sync-MonitorBrightness,
     Get-LaptopBrightness, Set-LaptopBrightness,
     Start-BrightnessFollow, Register-BrightnessFollow, Unregister-BrightnessFollow,
-    Get-MonitorOrientation, Set-MonitorOrientation `
-    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot
+    Get-MonitorOrientation, Set-MonitorOrientation,
+    Get-DeskConfig, Set-DeskConfig, Set-DeskAutoDetach,
+    Get-DeskProfileMap, Save-DeskProfileMap,
+    Get-DeskOwnership, Get-DeskExpectedInput, Get-DeskDetachedState, Get-DeskAttachedDevice,
+    Set-DeskMonitorAttached, Sync-DeskAttachment,
+    Start-DeskGuard, Register-DeskGuard, Unregister-DeskGuard `
+    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach
