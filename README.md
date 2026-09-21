@@ -71,20 +71,30 @@ Display and Peripheral Manager's CLI when DDPM is installed, with `m1ddc` as an
 optional fallback. The profile supplies:
 
 ```bash
-swmon list    # identify the external display
-swmon status
-swmon pc      # switch the Dell to the Windows PC's DisplayPort
-swmon mac     # switch it back to the Mac's USB-C input
+swdesk list    # identify the external display
+swdesk status
+swdesk pc      # switch the Dell to the Windows PC's DisplayPort
+swdesk mac     # switch it back to the Mac's USB-C input
 ```
 
 `desk-monitor` remains the underlying command, and the older `desk-pc` and
 `desk-mac` convenience aliases remain available.
 
+> **`swmon` is Windows-only, and means something else there.** On Windows it is
+> `Switch-MonitorSetup`, which toggles the desktop between multi-monitor and laptop-only.
+> This Mac has no equivalent, so `swmon` is deliberately not defined here - it used to be,
+> which made `swmon list` look like a cross-platform command when it never was.
+>
+> | Job | Windows | macOS |
+> | --- | --- | --- |
+> | Point a monitor at a machine | `swdesk` / `smin` | `swdesk` / `smin` |
+> | Toggle multi-monitor vs laptop-only | `swmon` | n/a |
+
 The Dell input codes are version controlled in
 [`macos/desk-monitor.conf`](macos/desk-monitor.conf). The display defaults to `auto`:
 this Mac is USB-C to a single monitor, so there is nothing to choose between and the
 one it can see is used. Pass an index when several are attached
-(`swmon pc 2`), or pin one with `DESK_MONITOR_DISPLAY` in the config.
+(`swdesk pc 2`), or pin one with `DESK_MONITOR_DISPLAY` in the config.
 
 To create only the zsh profile link manually:
 

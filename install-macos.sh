@@ -46,6 +46,6 @@ fi
 
 printf '\nInstalled. Start a new shell or run:\n  source "%s"\n\n' "$zshrc"
 printf 'Then verify the display and switch it:\n'
-printf '  swmon list\n'
-printf '  swmon pc      # right Dell: USB-C -> Windows DisplayPort\n'
-printf '  swmon mac     # right Dell: DisplayPort -> Mac USB-C\n'
+printf '  swdesk list\n'
+printf '  swdesk pc     # right Dell: USB-C -> Windows DisplayPort\n'
+printf '  swdesk mac    # right Dell: DisplayPort -> Mac USB-C\n'

@@ -150,15 +150,15 @@ The repository wraps this in a simpler, version-controlled setup:
 
 ```bash
 ./install-macos.sh
-swmon list
-swmon status
-swmon pc            # input 15: DisplayPort 1, connected to the main Windows PC
-swmon mac           # input 27: USB-C, connected to this Mac
+swdesk list
+swdesk status
+swdesk pc           # input 15: DisplayPort 1, connected to the main Windows PC
+swdesk mac          # input 27: USB-C, connected to this Mac
 ```
 
 The display index is `auto` by default, matching the Windows side: this Mac is USB-C to a
 single monitor, so the one it can see is used and no index has to be named. Pass one
-(`swmon pc 2`) or set `DESK_MONITOR_DISPLAY` only if several are ever attached.
+(`swdesk pc 2`) or set `DESK_MONITOR_DISPLAY` only if several are ever attached.
 
 The installer links the command into `~/.local/bin` and links the repository's
 `.zshrc` to `~/.zshrc`; the implementation and configuration remain in this
