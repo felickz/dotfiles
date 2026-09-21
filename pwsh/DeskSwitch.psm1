@@ -63,6 +63,7 @@ $script:RequiredNativeMethods = @(
     'Detach'
     'Attach'
     'ListAttached'
+    'ListAllDisplays'
 )
 
 if ('DeskSwitch.Native' -as [type]) {
@@ -142,6 +143,7 @@ namespace DeskSwitch {
         public const uint CDS_UPDATEREGISTRY     = 0x00000001;
         public const uint CDS_NORESET            = 0x10000000;
         public const int  ENUM_CURRENT_SETTINGS  = -1;
+        public const int  ENUM_REGISTRY_SETTINGS = -2;
         public const uint DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x00000001;
         public const uint DISPLAY_DEVICE_PRIMARY_DEVICE      = 0x00000004;
 
@@ -166,6 +168,18 @@ namespace DeskSwitch {
             var dm = new DEVMODE();
             dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
             if (!EnumDisplaySettings(device, ENUM_CURRENT_SETTINGS, ref dm)) return null;
+
+            // A detached display reports 0x0 as its CURRENT mode. Because the detach is no
+            // longer written to the display database, the REGISTRY copy still holds the
+            // geometry it had before - which is what makes an exact restore possible even
+            // with no saved state of our own.
+            if (dm.dmPelsWidth == 0) {
+                var reg = new DEVMODE();
+                reg.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+                if (EnumDisplaySettings(device, ENUM_REGISTRY_SETTINGS, ref reg) && reg.dmPelsWidth > 0) {
+                    dm = reg;
+                }
+            }
             if (dm.dmPelsWidth == 0) return null;
             return dm.dmPositionX + "," + dm.dmPositionY + "," + dm.dmPelsWidth + "," +
                    dm.dmPelsHeight + "," + dm.dmDisplayFrequency;
@@ -195,8 +209,24 @@ namespace DeskSwitch {
         }
 
         /// Removes a display from the desktop by applying a DEVMODE whose width, height and
-        /// position are all zero. Windows silently refuses to do this to the PRIMARY display:
-        /// the call reports success and nothing changes, so callers must check.
+        /// position are all zero.
+        ///
+        /// Deliberately NOT persisted: CDS_UPDATEREGISTRY would write the detach into the
+        /// display database, so it would survive a reboot or a re-enumeration. That turned a
+        /// handover into a stranded monitor once - the saved record of how to restore it was
+        /// keyed by a device name, a dock power-cycle renumbered the outputs, and Windows
+        /// re-applied a detach no longer matching anything we could undo.
+        ///
+        /// Without it the detach is live-only, so anything that re-enumerates the displays -
+        /// a reboot, a dock cycle, replugging - silently puts the monitor back. A handover is
+        /// temporary by nature, so losing it on re-enumeration is the safer default.
+        ///
+        /// Flags are 0 rather than CDS_NORESET: NORESET is only legal alongside
+        /// CDS_UPDATEREGISTRY and returns DISP_CHANGE_BADFLAGS (-4) on its own. Zero applies
+        /// the change immediately without writing it to the display database.
+        ///
+        /// Windows silently refuses to do this to the PRIMARY display: the call reports
+        /// success and nothing changes, so callers must check.
         public static int Detach(string device) {
             var dm = new DEVMODE();
             dm.dmDeviceName = device;
@@ -206,11 +236,34 @@ namespace DeskSwitch {
             dm.dmPelsHeight = 0;
             dm.dmPositionX = 0;
             dm.dmPositionY = 0;
-            int rc = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
-            if (rc != 0) return rc;
-            // A null device commits every pending CDS_NORESET change at once.
-            return ChangeDisplaySettingsEx(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+            int rc = ChangeDisplaySettingsEx(device, ref dm, IntPtr.Zero, 0, IntPtr.Zero);
+            return rc;
         }
+
+        /// Every display the driver knows about as "device|attached|monitorName", including
+        /// ones detached from the desktop. Used to find a monitor that is physically present
+        /// but not being driven - the state a lost or stale detach record leaves behind.
+        public static List<string> ListAllDisplays() {
+            var list = new List<string>();
+            for (uint i = 0; i < 32; i++) {
+                var dd = new DISPLAY_DEVICE();
+                dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+                if (!EnumDisplayDevices(IntPtr.Zero, i, ref dd, 0)) break;
+                if (string.IsNullOrEmpty(dd.DeviceName)) continue;
+
+                bool attached = (dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0;
+
+                var mon = new DISPLAY_DEVICE();
+                mon.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+                string monName = EnumDisplayDevices(dd.DeviceName, 0, ref mon, 0) ? mon.DeviceString : "";
+
+                list.Add(dd.DeviceName + "|" + (attached ? "1" : "0") + "|" + monName);
+            }
+            return list;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern bool EnumDisplayDevices(string dev, uint num, ref DISPLAY_DEVICE info, uint flags);
 
         /// Re-attaches a display with explicit geometry.
         ///
@@ -1668,7 +1721,11 @@ function Get-DeskAttachedDevice {
             Primary = ($f[6] -eq '1')
         }
     }
-    , $rows
+    # Returned plainly, NOT as ", $rows". That idiom wraps the result in an outer array, so
+    # "foreach ($a in Get-DeskAttachedDevice)" bound $a to the whole array and $a.X returned
+    # every X at once - which produced an Object[] where an int was expected. Callers wrap
+    # with @() when they need a guaranteed array.
+    $rows
 }
 
 function Set-DeskMonitorAttached {
@@ -1884,6 +1941,95 @@ function Repair-DeskDetachedState {
     $dropped
 }
 
+function Restore-DeskDisplays {
+    <#
+    .SYNOPSIS
+    Puts back any monitor that is connected but missing from the desktop.
+    .DESCRIPTION
+    The recovery hatch for a display that is physically present - Windows can read its EDID -
+    yet is not being driven, so it sits showing "no signal" while the desktop ignores it.
+
+    Unlike the re-attach in swdesk and syncmon, this needs no saved state. It scans every
+    display the driver knows about, finds ones that are detached but have a monitor behind
+    them, and attaches them. That matters because the saved record is keyed by device name,
+    and a dock power-cycle or driver restart renumbers those - which once left a monitor
+    stranded with nothing able to restore it.
+
+    Position comes from whatever Windows still has on record for that display; if it has
+    none, the monitor is placed beside the existing desktop rather than stacked at 0,0.
+    .PARAMETER Width
+    Fallback width when Windows has no remembered mode. Default 2560.
+    .PARAMETER Height
+    Fallback height. Default 1440.
+    .PARAMETER Hz
+    Fallback refresh rate. Default 60.
+    .EXAMPLE
+    fixmon
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [int]$Width = 2560,
+        [int]$Height = 1440,
+        [int]$Hz = 60,
+        [switch]$Quiet
+    )
+
+    $candidates = @()
+    foreach ($line in [DeskSwitch.Native]::ListAllDisplays()) {
+        $f = "$line" -split '\|'
+        if (@($f).Count -lt 3) { continue }
+        # Detached, but a monitor is present behind it: that is a screen showing "no signal".
+        if ($f[1] -eq '0' -and $f[2]) {
+            $candidates += [pscustomobject]@{ Device = $f[0]; Monitor = $f[2] }
+        }
+    }
+
+    if (-not $candidates) {
+        if (-not $Quiet) { Write-Host '  Every connected monitor is already on the desktop.' -ForegroundColor DarkGray }
+        return 0
+    }
+
+    # Anything with no remembered position goes to the RIGHT of the current desktop. Placing
+    # it left would push into negative space that the other monitors already occupy, and an
+    # int is forced here because a stray array would silently break the arithmetic.
+    $rightEdge = 0
+    foreach ($a in @(Get-DeskAttachedDevice)) {
+        $edge = [int]$a.X + [int]$a.Width
+        if ($edge -gt $rightEdge) { $rightEdge = $edge }
+    }
+
+    $restored = 0
+    foreach ($c in $candidates) {
+        $mode = [DeskSwitch.Native]::GetMode($c.Device)
+        $x = $rightEdge; $y = 0; $w = $Width; $h = $Height; $r = $Hz
+        if ($mode) {
+            $p = "$mode" -split ','
+            if (@($p).Count -ge 5 -and [int]$p[2] -gt 0) {
+                $x = [int]$p[0]; $y = [int]$p[1]; $w = [int]$p[2]; $h = [int]$p[3]; $r = [int]$p[4]
+            }
+        }
+
+        if (-not $PSCmdlet.ShouldProcess("$($c.Monitor) [$($c.Device)]", "Attach at ${w}x${h} @ $x,$y")) { continue }
+
+        $rc = [DeskSwitch.Native]::Attach($c.Device, $x, $y, $w, $h, $r)
+        Start-Sleep -Seconds 2
+        if ($rc -eq 0) {
+            $restored++
+            if (($x + $w) -gt $rightEdge) { $rightEdge = $x + $w }
+            if (-not $Quiet) { Write-Host "  restored $($c.Monitor) [$($c.Device)] at ${w}x${h} @ $x,$y" -ForegroundColor Green }
+        }
+        else {
+            Write-Verbose "$($c.Device): ChangeDisplaySettingsEx returned $rc (likely an output with no real monitor)."
+        }
+    }
+
+    # Anything we restored is by definition no longer handed away.
+    [void](Repair-DeskDetachedState)
+
+    if (-not $Quiet -and $restored -eq 0) { Write-Host '  Nothing could be restored.' -ForegroundColor DarkGray }
+    $restored
+}
+
 function Start-DeskGuard {
     <#
     .SYNOPSIS
@@ -2040,6 +2186,7 @@ Set-Alias -Name grot   -Value Get-MonitorOrientation -Force
 Set-Alias -Name gown       -Value Get-DeskOwnership   -Force
 Set-Alias -Name syncmon    -Value Sync-DeskAttachment -Force
 Set-Alias -Name autodetach -Value Set-DeskAutoDetach  -Force
+Set-Alias -Name fixmon     -Value Restore-DeskDisplays -Force
 
 Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskProfile,
     Test-DeskProfileApplied, Start-DeskFollow, Register-DeskFollow, Unregister-DeskFollow,
@@ -2051,7 +2198,7 @@ Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskPro
     Get-DeskConfig, Set-DeskConfig, Set-DeskAutoDetach,
     Get-DeskProfileMap, Save-DeskProfileMap,
     Get-DeskOwnership, Get-DeskExpectedInput, Get-DeskDetachedState, Get-DeskAttachedDevice,
-    Repair-DeskDetachedState,
+    Repair-DeskDetachedState, Restore-DeskDisplays,
     Set-DeskMonitorAttached, Sync-DeskAttachment,
     Start-DeskGuard, Register-DeskGuard, Unregister-DeskGuard `
-    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach
+    -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach, fixmon
