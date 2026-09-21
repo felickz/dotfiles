@@ -1941,6 +1941,122 @@ function Repair-DeskDetachedState {
     $dropped
 }
 
+$script:DeskBaselineFile = Join-Path $env:LOCALAPPDATA 'deskswitch-baseline.json'
+
+function Get-DeskBaseline {
+    <#
+    .SYNOPSIS
+    The last known-good snapshot of this desk.
+    .DESCRIPTION
+    Records which monitors are normally here, by EDID name and geometry, so a later fault
+    can be described as "one of your monitors is missing" rather than just "three screens".
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (-not (Test-Path $script:DeskBaselineFile)) { return $null }
+    try {
+        Get-Content $script:DeskBaselineFile -Raw -ErrorAction Stop | ConvertFrom-Json
+    }
+    catch {
+        Write-Verbose "Ignoring unreadable $($script:DeskBaselineFile): $($_.Exception.Message)"
+        $null
+    }
+}
+
+function Update-DeskBaseline {
+    <#
+    .SYNOPSIS
+    Snapshots the desk, but only while it looks healthy.
+    .DESCRIPTION
+    Only records a state where every display the driver reports a monitor for is actually
+    attached. Snapshotting a broken desk would bake the fault in as normal and the warning
+    would never fire again - which is the one way this feature could make things worse.
+    .PARAMETER Force
+    Snapshot even if the desk looks incomplete.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([switch]$Force)
+
+    $rows = @()
+    $unhealthy = 0
+    foreach ($line in [DeskSwitch.Native]::ListAllDisplays()) {
+        $f = "$line" -split '\|'
+        if (@($f).Count -lt 3 -or -not $f[2]) { continue }   # no monitor behind it
+        if ($f[1] -ne '1') { $unhealthy++; continue }        # monitor present but detached
+        $mode = [DeskSwitch.Native]::GetMode($f[0])
+        $p = if ($mode) { "$mode" -split ',' } else { $null }
+        $rows += [pscustomobject]@{
+            Monitor = $f[2]
+            X       = if ($p) { [int]$p[0] } else { 0 }
+            Y       = if ($p) { [int]$p[1] } else { 0 }
+            Width   = if ($p) { [int]$p[2] } else { 0 }
+            Height  = if ($p) { [int]$p[3] } else { 0 }
+            Hz      = if ($p) { [int]$p[4] } else { 60 }
+        }
+    }
+
+    if (-not $rows) { return 0 }
+    if ($unhealthy -and -not $Force) {
+        Write-Verbose "Desk has $unhealthy detached monitor(s); not snapshotting a broken state."
+        return 0
+    }
+
+    # Never shrink the baseline silently: fewer monitors than last time usually means one is
+    # missing, not that the desk changed. -Force is how a genuine desk change is recorded.
+    $existing = Get-DeskBaseline
+    if ($existing -and @($existing.Monitors).Count -gt $rows.Count -and -not $Force) {
+        Write-Verbose "Only $($rows.Count) monitors vs $(@($existing.Monitors).Count) in the baseline; not overwriting."
+        return 0
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($script:DeskBaselineFile, 'Save desk baseline')) { return 0 }
+
+    [pscustomobject]@{ Saved = (Get-Date).ToString('o'); Monitors = $rows } |
+        ConvertTo-Json -Depth 5 | Set-Content $script:DeskBaselineFile -Encoding utf8
+    $rows.Count
+}
+
+function Get-DeskMissingMonitor {
+    <#
+    .SYNOPSIS
+    Monitors in the baseline that are not physically reachable now.
+    .DESCRIPTION
+    The distinction that decides whether software can help at all:
+
+      detached but present - Windows still reads its EDID, so it can be attached back
+      absent entirely      - no EDID on any input, so there is nothing to command
+
+    Only the second kind needs the cable or the dock power-cycled. Comparison is by EDID
+    name and count, because device names renumber across a dock cycle while the names do not.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $baseline = Get-DeskBaseline
+    if (-not $baseline) { return @() }
+
+    $have = @{}
+    foreach ($line in [DeskSwitch.Native]::ListAllDisplays()) {
+        $f = "$line" -split '\|'
+        if (@($f).Count -lt 3 -or -not $f[2]) { continue }
+        if ($have.ContainsKey($f[2])) { $have[$f[2]]++ } else { $have[$f[2]] = 1 }
+    }
+
+    $want = @{}
+    foreach ($m in @($baseline.Monitors)) {
+        if ($want.ContainsKey($m.Monitor)) { $want[$m.Monitor]++ } else { $want[$m.Monitor] = 1 }
+    }
+
+    $missing = @()
+    foreach ($name in $want.Keys) {
+        $hadCount = $want[$name]
+        $nowCount = if ($have.ContainsKey($name)) { $have[$name] } else { 0 }
+        for ($i = 0; $i -lt ($hadCount - $nowCount); $i++) { $missing += $name }
+    }
+    $missing
+}
+
 function Restore-DeskDisplays {
     <#
     .SYNOPSIS
@@ -1985,7 +2101,15 @@ function Restore-DeskDisplays {
     }
 
     if (-not $candidates) {
+        $missingNow = @(Get-DeskMissingMonitor)
+        if ($missingNow) {
+            Write-Warning ("Not reachable at all: {0}." -f ($missingNow -join ', '))
+            Write-Host '  Nothing is detached, so there is nothing to attach - this monitor has no EDID link.' -ForegroundColor Yellow
+            Write-Host '  Try Reset-Dock -Depth Controller, then a real dock power-cycle at the wall.' -ForegroundColor Cyan
+            return 0
+        }
         if (-not $Quiet) { Write-Host '  Every connected monitor is already on the desktop.' -ForegroundColor DarkGray }
+        [void](Update-DeskBaseline)
         return 0
     }
 
@@ -2026,7 +2150,27 @@ function Restore-DeskDisplays {
     # Anything we restored is by definition no longer handed away.
     [void](Repair-DeskDetachedState)
 
-    if (-not $Quiet -and $restored -eq 0) { Write-Host '  Nothing could be restored.' -ForegroundColor DarkGray }
+    # A monitor in the baseline that is not reachable at all is a different fault: there is
+    # no EDID, so nothing here can command it. Say so, and say what actually works.
+    $missing = @(Get-DeskMissingMonitor)
+    if ($missing) {
+        Write-Host ''
+        Write-Warning ("Not reachable at all: {0}." -f ($missing -join ', '))
+        Write-Host '  Windows cannot see this monitor on any input, so there is no link to command -' -ForegroundColor Yellow
+        Write-Host '  attaching, re-detecting and switching inputs all have nothing to act on.' -ForegroundColor Yellow
+        Write-Host '  Try, in order:' -ForegroundColor Yellow
+        Write-Host '    1. Reset-Dock -Depth Controller   (software dock cycle)' -ForegroundColor Cyan
+        Write-Host '    2. POWER-CYCLE THE DOCK at the wall - this is what worked before when' -ForegroundColor Cyan
+        Write-Host '       the software cycle did not; USB-C alt mode only renegotiates on a real power loss' -ForegroundColor Cyan
+        Write-Host '    3. Unplug/replug that monitor''s own cable' -ForegroundColor Cyan
+        Write-Host '  Then run fixmon again.' -ForegroundColor Yellow
+    }
+    elseif ($restored -gt 0) {
+        # Desk is whole again, so this is a good moment to refresh what "normal" means.
+        [void](Update-DeskBaseline)
+    }
+
+    if (-not $Quiet -and $restored -eq 0 -and -not $missing) { Write-Host '  Nothing could be restored.' -ForegroundColor DarkGray }
     $restored
 }
 
@@ -2084,6 +2228,11 @@ function Start-DeskGuard {
             $lastPass = $now
 
             [void](Repair-DeskDetachedState)
+
+            # Keep the record of "normal" current while the desk is healthy, so a later fault
+            # can be named rather than just counted. Update-DeskBaseline refuses to snapshot
+            # a desk that has a detached monitor, so a fault cannot become the new normal.
+            [void](Update-DeskBaseline)
 
             if (-not $cfg.AutoDetach -or $now -lt $resumeUntil) {
                 $unownedSince.Clear()
@@ -2199,6 +2348,7 @@ Export-ModuleMember -Function Get-MonitorInput, Set-MonitorInput, Switch-DeskPro
     Get-DeskProfileMap, Save-DeskProfileMap,
     Get-DeskOwnership, Get-DeskExpectedInput, Get-DeskDetachedState, Get-DeskAttachedDevice,
     Repair-DeskDetachedState, Restore-DeskDisplays,
+    Get-DeskBaseline, Update-DeskBaseline, Get-DeskMissingMonitor,
     Set-DeskMonitorAttached, Sync-DeskAttachment,
     Start-DeskGuard, Register-DeskGuard, Unregister-DeskGuard `
     -Alias swdesk, gmin, smin, gmb, smb, syncbr, rot, grot, gown, syncmon, autodetach, fixmon

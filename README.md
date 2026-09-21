@@ -26,7 +26,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1626) | Which monitors this PC actually drives (Owned=False means another machine has it) |
 | `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L1864) | Drop monitors another machine took (-Reclaim to also re-attach) |
 | `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1566) | Toggle auto-detach live: autodetach On \| Off |
-|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L2033) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
+|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L2177) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
 |  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1187) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
 |  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L833) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
 | `ccu` | [`Check-CopilotUpdates`](pwsh/Microsoft.PowerShell_profile.ps1#L203) | Check for Copilot CLI updates |
