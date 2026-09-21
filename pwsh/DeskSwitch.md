@@ -196,13 +196,20 @@ Windows repacks the desktop around the new shape, so neighbouring monitors may s
 
 ```powershell
 gown                 # who actually drives each monitor right now
-syncmon              # drop monitors another machine took, re-attach ones we got back
+swdesk               # take everything back: re-attach, then set inputs
+syncmon              # drop monitors another machine took
 autodetach Off       # pause it for a quick hop to the other machine
 autodetach On
 
 Start-DeskGuard      # watch continuously
 Register-DeskGuard   # ...and do that from every logon (no admin)
 ```
+
+`swdesk` is the "give me all my monitors back" shortcut: it re-attaches anything the guard
+dropped, then switches each one to this machine's input. `syncmon` only reconciles the
+desktop, and does not re-attach by default - a detached monitor cannot answer DDC, so the
+only way to test whether it came back is to attach it and look, which flaps the desktop if
+it is still the other machine's. Use `syncmon -Reclaim` if you want that check.
 
 Switching a monitor's input is only half a handover. The cable this machine is on stays
 trained, so Windows keeps extending the desktop onto a panel that is now showing another
@@ -262,6 +269,10 @@ re-attaches first, and handing a monitor to another machine detaches it afterwar
   nothing changes. That case is refused up front rather than appearing to work.
 - Roles are worked out from screen X **including** detached monitors, so handing over the
   left panel does not silently promote the centre one to "Left".
+- A monitor that has just had its input switched **drops out of the DDC enumeration for a
+  few seconds**, which shifts the roles of everything still visible. Anything acting on a
+  monitor it has already found therefore passes the GDI device name rather than re-resolving
+  by role - without that, detaching "Left" could target the centre panel.
 - The watchers run as `-NoProfile` scheduled tasks, where `$DeskProfiles` does not exist.
   Registering one snapshots the map to `%LOCALAPPDATA%\deskswitch-profiles.json`. After
   editing `$DeskProfiles`, run `Save-DeskProfileMap` to refresh it.

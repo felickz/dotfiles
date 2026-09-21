@@ -15,20 +15,20 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 | `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L555) | Wake USB-C dock monitors stuck after sleep (admin) |
 | `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L634) | Toggle multi-monitor extend <-> laptop screen only |
-| `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L678) | Point monitors at a machine: swdesk main \| mac \| personal |
+| `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L698) | Take all my monitors back (or hand over: swdesk mac \| personal) |
 | `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L534) | Show each monitor's role, current input (-Detailed = supported inputs) |
 | `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L560) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
-| `gmb` | [`Get-MonitorBrightness`](pwsh/DeskSwitch.psm1#L949) | Show brightness/contrast of every monitor + the laptop panel |
-| `smb` | [`Set-MonitorBrightness`](pwsh/DeskSwitch.psm1#L990) | Set brightness, e.g. smb 40 \| smb 65 Center |
-| `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1077) | Match externals to the laptop panel now (syncbr -10 biases them) |
-| `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1248) | Rotate a monitor, e.g. rot Right Portrait \| rot Portrait \| rot Right (toggle) |
-| `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1219) | Show how each monitor is currently rotated |
-| `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1543) | Which monitors this PC actually drives (Owned=False means another machine has it) |
-| `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L1766) | Drop monitors another machine took, re-attach ones we got back |
-| `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1483) | Toggle auto-detach live: autodetach On \| Off |
-|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L1808) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
-|  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1114) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
-|  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L760) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
+| `gmb` | [`Get-MonitorBrightness`](pwsh/DeskSwitch.psm1#L969) | Show brightness/contrast of every monitor + the laptop panel |
+| `smb` | [`Set-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1010) | Set brightness, e.g. smb 40 \| smb 65 Center |
+| `syncbr` | [`Sync-MonitorBrightness`](pwsh/DeskSwitch.psm1#L1097) | Match externals to the laptop panel now (syncbr -10 biases them) |
+| `rot` | [`Set-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1268) | Rotate a monitor, e.g. rot Right Portrait \| rot Portrait \| rot Right (toggle) |
+| `grot` | [`Get-MonitorOrientation`](pwsh/DeskSwitch.psm1#L1239) | Show how each monitor is currently rotated |
+| `gown` | [`Get-DeskOwnership`](pwsh/DeskSwitch.psm1#L1563) | Which monitors this PC actually drives (Owned=False means another machine has it) |
+| `syncmon` | [`Sync-DeskAttachment`](pwsh/DeskSwitch.psm1#L1797) | Drop monitors another machine took (-Reclaim to also re-attach) |
+| `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1503) | Toggle auto-detach live: autodetach On \| Off |
+|  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L1846) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
+|  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1134) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
+|  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L780) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
 | `ccu` | [`Check-CopilotUpdates`](pwsh/Microsoft.PowerShell_profile.ps1#L203) | Check for Copilot CLI updates |
 | `gcop` | [`Get-CopilotProcess`](pwsh/Microsoft.PowerShell_profile.ps1#L143) | Copilot CLI/app instances holding the shared plugin git cache |
 | `udgh` | [`Update-GhExtensions`](pwsh/Microsoft.PowerShell_profile.ps1#L230) | Update gh CLI extensions (skipped while Copilot runs; -Force) |

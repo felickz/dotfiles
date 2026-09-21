@@ -635,6 +635,22 @@ function Set-MonitorInput {
     }
 
     $mons = @(Get-DeskMonitor)
+
+    # Switching one monitor's input disturbs the DDC bus, and a neighbour can drop out of
+    # the enumeration for several seconds afterwards - during "swdesk" that surfaced as a
+    # spurious "no monitor in the 'Center' position" between two roles that were both
+    # plainly present. Retry before believing a monitor is really gone.
+    if ($roles.Count) {
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            $missing = @($roles | Where-Object { $r = $_; -not ($mons | Where-Object { $_.Role -eq $r }) })
+            if (-not $missing -or $mons.Count -eq 0) { break }
+            Write-Verbose "Role(s) $($missing -join ', ') not enumerated yet; retrying ($attempt/3)."
+            Close-DeskMonitorHandle $script:LastHandleSets
+            Start-Sleep -Milliseconds 1800
+            $mons = @(Get-DeskMonitor)
+        }
+    }
+
     $changed = 0
     $handedOff = @()
 
@@ -658,17 +674,21 @@ function Set-MonitorInput {
             $changed++
             if (-not $Quiet) { Write-Host "  $($m.Role) ($($m.Description)) -> $name" -ForegroundColor Green }
 
-            # Handed to another machine: note it for detaching once DDC work is finished.
+            # Handed to another machine: note the DEVICE, not just the role. Re-resolving the
+            # role after the switch is unsafe, because this monitor drops out of the DDC
+            # enumeration for a few seconds and the remaining panels shift roles.
             $want = if ($expected.ContainsKey($m.Role)) { $expected[$m.Role] } else { $null }
-            if ($want -and $name -ne $want) { $handedOff += $m.Role }
+            if ($want -and $name -ne $want) {
+                $handedOff += [pscustomobject]@{ Role = $m.Role; Device = $m.Device }
+            }
         }
     }
     finally { Close-DeskMonitorHandle $script:LastHandleSets }
 
     # After the handles are released, so the detach cannot race the DDC session.
     if ($handedOff -and (Get-DeskConfig).AutoDetach) {
-        foreach ($role in $handedOff) {
-            [void](Set-DeskMonitorAttached -Role $role -Attached $false -Quiet:$Quiet)
+        foreach ($handed in $handedOff) {
+            [void](Set-DeskMonitorAttached -Role $handed.Role -Device $handed.Device -Attached $false -Quiet:$Quiet)
         }
     }
 
@@ -1657,7 +1677,12 @@ function Set-DeskMonitorAttached {
     3. Windows silently refuses to detach the PRIMARY display: the call reports success and
        nothing changes. That case is refused up front instead of appearing to work.
     .PARAMETER Role
-    Left, Center, Right or Only.
+    Left, Center, Right or Only. Used to look the monitor up when -Device is not given.
+    .PARAMETER Device
+    GDI device name, e.g. "\\.\DISPLAY6". Preferred whenever the caller already knows it:
+    role lookup re-enumerates over DDC, and a monitor that has just had its input switched
+    drops out of that enumeration for a few seconds, which silently shifts every role along
+    and can resolve "Left" to the wrong panel entirely.
     .PARAMETER Attached
     $false detaches; $true re-attaches using the geometry saved when it was detached.
     .EXAMPLE
@@ -1667,6 +1692,7 @@ function Set-DeskMonitorAttached {
     param(
         [Parameter(Mandatory, Position = 0)][string]$Role,
         [Parameter(Mandatory, Position = 1)][bool]$Attached,
+        [string]$Device,
         [switch]$Quiet
     )
 
@@ -1695,15 +1721,20 @@ function Set-DeskMonitorAttached {
     }
 
     # --- detach ---
-    $mons = @(Get-DeskMonitor)
-    $device = $null
+    # Prefer the caller's device. Re-resolving by role here is unsafe straight after an
+    # input switch: the monitor stops answering DDC for a few seconds, the survivors are
+    # re-ranked by position, and "Left" can resolve to the centre panel.
+    $device = $Device
     $label = $Role
-    try {
-        foreach ($m in $mons) {
-            if ($m.Role -eq $Role) { $device = $m.Device; $label = $m.Description; break }
+    if (-not $device) {
+        $mons = @(Get-DeskMonitor)
+        try {
+            foreach ($m in $mons) {
+                if ($m.Role -eq $Role) { $device = $m.Device; $label = $m.Description; break }
+            }
         }
+        finally { Close-DeskMonitorHandle $script:LastHandleSets }
     }
-    finally { Close-DeskMonitorHandle $script:LastHandleSets }
 
     if (-not $device) {
         Write-Warning "No DDC-capable monitor in the '$Role' position (already detached?)."
@@ -1766,28 +1797,35 @@ function Set-DeskMonitorAttached {
 function Sync-DeskAttachment {
     <#
     .SYNOPSIS
-    Brings the desktop in line with who actually owns each monitor.
+    Makes the desktop match who actually owns each monitor.
     .DESCRIPTION
-    Detaches every monitor another machine has taken, and re-attaches everything this module
-    detached earlier. Run it after taking monitors back, or any time the desktop and the
-    hardware have drifted apart.
+    Detaches every monitor another machine has taken. That is the common case: the desktop
+    has drifted from the hardware and windows are landing on a panel you cannot see.
 
-    Re-attaching happens first, because a monitor that is back on this machine's input has
-    to be on the desktop before anything else can see it.
+    Re-attaching is NOT the default. A detached monitor cannot answer DDC, so the only way
+    to discover whether it came back is to attach it and look - and if it is still the other
+    machine's, it has to be dropped again, which flaps the desktop. Use -Reclaim when you
+    want that check, or just run "swdesk", which attaches and sets the inputs properly.
+    .PARAMETER Reclaim
+    Also re-attach previously detached monitors, keeping the ones that came back.
     .PARAMETER Force
     Detach even when auto-detach is switched off.
     .EXAMPLE
     syncmon
+    .EXAMPLE
+    syncmon -Reclaim
     #>
     [CmdletBinding(SupportsShouldProcess)]
-    param([switch]$Force, [switch]$Quiet)
+    param([switch]$Reclaim, [switch]$Force, [switch]$Quiet)
 
     $changed = 0
 
-    foreach ($role in @((Get-DeskDetachedState).Keys)) {
-        $changed += Set-DeskMonitorAttached -Role $role -Attached $true -Quiet:$Quiet
+    if ($Reclaim) {
+        foreach ($role in @((Get-DeskDetachedState).Keys)) {
+            $changed += Set-DeskMonitorAttached -Role $role -Attached $true -Quiet:$Quiet
+        }
+        if ($changed) { Start-Sleep -Seconds 3 }
     }
-    if ($changed) { Start-Sleep -Seconds 2 }
 
     $cfg = Get-DeskConfig
     if (-not $cfg.AutoDetach -and -not $Force) {
@@ -1797,7 +1835,7 @@ function Sync-DeskAttachment {
 
     foreach ($o in (Get-DeskOwnership)) {
         if ($o.Attached -and $o.Owned -eq $false) {
-            $changed += Set-DeskMonitorAttached -Role $o.Role -Attached $false -Quiet:$Quiet
+            $changed += Set-DeskMonitorAttached -Role $o.Role -Device $o.Device -Attached $false -Quiet:$Quiet
         }
     }
 
@@ -1855,7 +1893,7 @@ function Start-DeskGuard {
                     $waited = ((Get-Date) - $unownedSince[$o.Role]).TotalSeconds
                     if ($waited -ge $cfg.DetachDelaySeconds) {
                         Write-Host "$($o.Role) taken by another machine (input $($o.Input)) - detaching." -ForegroundColor Yellow
-                        [void](Set-DeskMonitorAttached -Role $o.Role -Attached $false -Quiet)
+                        [void](Set-DeskMonitorAttached -Role $o.Role -Device $o.Device -Attached $false -Quiet)
                         $unownedSince.Remove($o.Role)
                     }
                 }
