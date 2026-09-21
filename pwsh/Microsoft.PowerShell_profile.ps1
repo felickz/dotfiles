@@ -552,6 +552,146 @@ pause
 '@
 }
 
+function Reset-Dock {
+    <#
+    .SYNOPSIS
+    Software equivalent of unplugging the dock's USB-C cable and plugging it back in.
+    .DESCRIPTION
+    Yanking the cable forces everything behind the dock to re-enumerate, which recovers
+    outputs that did not come back from Modern Standby. The cost is losing keyboard, mouse
+    and network for a few seconds, and having to physically reach the cable.
+
+    This does the same thing from software by disabling and re-enabling the dock's USB
+    devices. Measured on this desk, the dock's video and network functions sit on a
+    different Intel xHCI controller from the Logi Bolt receiver, so -Depth Controller
+    recycles the dock without taking the keyboard and mouse with it.
+
+    The disable and enable run inside ONE elevated process with the enable in a finally
+    block, so the dock is restored even if the step in between throws, and even if this
+    shell loses its input devices while it happens. Nothing has to be clicked to recover.
+
+    What this CANNOT do: re-negotiate USB-C alt mode. A display driven over DP-alt through
+    the dock is not a USB device, so if that link is what dropped, only a real re-plug
+    renegotiates it.
+
+    Cycling the Surface UCM UCSI HID client, which does own alt-mode negotiation, was tried
+    and is deliberately not offered here: it briefly took the keyboard and mouse with it and
+    still did not recover a DP-alt display. A physical re-plug remains the only fix for that
+    layer.
+    .PARAMETER Depth
+    Dock (default) cycles the Plugable composite - DisplayLink, Ethernet, audio.
+    Controller cycles the whole xHCI controller the dock is on, which is closer to a
+    physical re-plug. Both leave the keyboard alone on this hardware; Controller is checked
+    at runtime and refuses if an input device is behind it.
+    .PARAMETER OffSeconds
+    How long to stay disabled. Default 6.
+    .EXAMPLE
+    Reset-Dock
+    .EXAMPLE
+    Reset-Dock -Depth Controller
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [ValidateSet('Dock', 'Controller')][string]$Depth = 'Dock',
+        [ValidateRange(2, 30)][int]$OffSeconds = 6
+    )
+
+    $dockPattern = 'VID_17E9&PID_6011'
+
+    $composite = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceId -like "USB\$dockPattern\*" -and $_.InstanceId -notmatch '&MI_' } |
+        Select-Object -First 1
+    if (-not $composite) {
+        Write-Warning 'Plugable dock not found. Is it connected?'
+        return
+    }
+
+    # Walk up to the controller so both depths are resolved from the live tree rather than
+    # a hardcoded ID that changes when the dock moves ports.
+    $chain = @()
+    $cur = $composite.InstanceId
+    for ($i = 0; $i -lt 10; $i++) {
+        $p = (Get-PnpDeviceProperty -InstanceId $cur -KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data
+        if (-not $p) { break }
+        $chain += $p
+        $cur = $p
+    }
+    $controller = $chain | Where-Object { $_ -like 'PCI\*' } | Select-Object -First 1
+
+    $target = if ($Depth -eq 'Controller') { $controller } else { $composite.InstanceId }
+    if (-not $target) {
+        Write-Warning "Could not resolve a '$Depth' target for the dock."
+        return
+    }
+
+    # Refuse to cut our own input off: walk every present input device up to the controller.
+    if ($Depth -eq 'Controller') {
+        $inputBehind = @()
+        foreach ($d in (Get-PnpDevice -PresentOnly -Class Keyboard, Mouse -ErrorAction SilentlyContinue)) {
+            $c = $d.InstanceId
+            for ($i = 0; $i -lt 10; $i++) {
+                $p = (Get-PnpDeviceProperty -InstanceId $c -KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data
+                if (-not $p) { break }
+                if ($p -eq $target) { $inputBehind += $d.FriendlyName; break }
+                $c = $p
+            }
+        }
+        if ($inputBehind) {
+            Write-Warning "Refusing: keyboard/mouse sit behind that controller ($($inputBehind -join ', ')). Use -Depth Dock."
+            return
+        }
+    }
+
+    $targetName = (Get-PnpDevice -InstanceId $target -ErrorAction SilentlyContinue).FriendlyName
+    if (-not $PSCmdlet.ShouldProcess("$targetName [$target]", "Disable for ${OffSeconds}s then re-enable")) { return }
+
+    $log = Join-Path $env:TEMP 'reset-dock.log'
+    $payload = @"
+`$ErrorActionPreference = 'Stop'
+`$log = '$log'
+`$id  = '$target'
+"Reset-Dock `$(Get-Date -Format o)"        | Set-Content -Path `$log
+"target: `$id"                             | Add-Content -Path `$log
+try {
+    Disable-PnpDevice -InstanceId `$id -Confirm:`$false
+    "disabled"                             | Add-Content -Path `$log
+    Start-Sleep -Seconds $OffSeconds
+}
+catch {
+    "ERROR during disable: `$(`$_.Exception.Message)" | Add-Content -Path `$log
+}
+finally {
+    # Always runs: the dock must never be left disabled, or the machine loses network
+    # and possibly input with no way back except a reboot.
+    try {
+        Enable-PnpDevice -InstanceId `$id -Confirm:`$false
+        "re-enabled"                       | Add-Content -Path `$log
+    }
+    catch {
+        "ERROR during enable: `$(`$_.Exception.Message)" | Add-Content -Path `$log
+    }
+}
+Start-Sleep -Seconds 4
+`$d = Get-PnpDevice -InstanceId `$id -ErrorAction SilentlyContinue
+"final status: `$(`$d.Status)"             | Add-Content -Path `$log
+"@
+
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
+
+    Write-Host "Cycling $targetName for ${OffSeconds}s - approve the UAC prompt." -ForegroundColor Yellow
+    Write-Host "  Network and dock displays will drop briefly. Keyboard and mouse are on a separate controller." -ForegroundColor DarkGray
+
+    $proc = Start-Process powershell.exe -Verb RunAs -Wait -PassThru `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+
+    Start-Sleep -Seconds 3
+    if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray } }
+
+    $after = Get-PnpDevice -InstanceId $target -ErrorAction SilentlyContinue
+    if ($after.Status -eq 'OK') { Write-Host "Dock is back (exit $($proc.ExitCode))." -ForegroundColor Green }
+    else { Write-Warning "Dock status is '$($after.Status)'. See $log" }
+}
+
 function Restart-Monitors {
     <#
     .SYNOPSIS
