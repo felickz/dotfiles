@@ -14,6 +14,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `cpdep` | [`copilot-depcheck`](pwsh/Microsoft.PowerShell_profile.ps1#L309) | Copilot CLI with Dependabot dep vulnerability scanning |
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 | `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L695) | Wake USB-C dock monitors stuck after sleep (admin) |
+|  | [`Reset-Dock`](pwsh/Microsoft.PowerShell_profile.ps1#L555) | Recycle the dock in software instead of pulling the cable (admin) |
 | `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L808) | Toggle multi-monitor extend <-> laptop screen only |
 | `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L820) | Take all my monitors back (or hand over: swdesk mac \| personal) |
 | `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L656) | Show each monitor's role, current input (-Detailed = supported inputs) |
@@ -28,6 +29,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `setprim` | [`Set-DeskPrimary`](pwsh/DeskSwitch.psm1#L1822) | Make a display primary, e.g. setprim '\\\\.\\DISPLAY1' |
 | `autodetach` | [`Set-DeskAutoDetach`](pwsh/DeskSwitch.psm1#L1635) | Toggle auto-detach live: autodetach On \| Off |
 |  | [`Start-DeskGuard`](pwsh/DeskSwitch.psm1#L2345) | Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon) |
+| `fixmon` | [`Restore-DeskDisplays`](pwsh/DeskSwitch.psm1#L2228) | Re-attach a connected monitor missing from the desktop; warns if it needs a dock power-cycle |
 |  | [`Start-BrightnessFollow`](pwsh/DeskSwitch.psm1#L1256) | Externals track the laptop brightness keys (Register-BrightnessFollow = at logon) |
 |  | [`Start-DeskFollow`](pwsh/DeskSwitch.psm1#L902) | Claim this machine's monitors when you type here (Register-DeskFollow = at logon) |
 | `ccu` | [`Check-CopilotUpdates`](pwsh/Microsoft.PowerShell_profile.ps1#L203) | Check for Copilot CLI updates |

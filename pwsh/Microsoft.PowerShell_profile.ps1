@@ -1184,6 +1184,7 @@ $functions = @(
     @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
     @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
+    @{ Alias = "";        Name = "Reset-Dock";                   Desc = "Recycle the dock in software instead of pulling the cable (admin)" }
     @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle multi-monitor extend <-> laptop screen only" }
     @{ Alias = "swdesk";  Name = "Switch-DeskProfile";           Desc = "Take all my monitors back (or hand over: swdesk mac | personal)" }
     @{ Alias = "gmin";    Name = "Get-MonitorInput";             Desc = "Show each monitor's role, current input (-Detailed = supported inputs)" }
@@ -1198,6 +1199,7 @@ $functions = @(
     @{ Alias = "setprim"; Name = "Set-DeskPrimary";              Desc = "Make a display primary, e.g. setprim '\\.\DISPLAY1'" }
     @{ Alias = "autodetach"; Name = "Set-DeskAutoDetach";        Desc = "Toggle auto-detach live: autodetach On | Off" }
     @{ Alias = "";        Name = "Start-DeskGuard";              Desc = "Auto-detach a monitor when another PC grabs it (Register-DeskGuard = at logon)" }
+    @{ Alias = "fixmon";  Name = "Restore-DeskDisplays";         Desc = "Re-attach a connected monitor missing from the desktop; warns if it needs a dock power-cycle" }
     @{ Alias = "";        Name = "Start-BrightnessFollow";       Desc = "Externals track the laptop brightness keys (Register-BrightnessFollow = at logon)" }
     @{ Alias = "";        Name = "Start-DeskFollow";             Desc = "Claim this machine's monitors when you type here (Register-DeskFollow = at logon)" }
     @{ Alias = "ccu";     Name = "Check-CopilotUpdates";         Desc = "Check for Copilot CLI updates" }
