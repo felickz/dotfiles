@@ -378,6 +378,45 @@ The checked-in Mac configuration already uses input `27`.
 
 Run `gmin -Detailed` after any hardware change to see what each monitor actually offers.
 
+## Two display paths, and why that decides which fix works
+
+The three external monitors are not driven the same way, and every recovery attempt that
+failed did so because it was aimed at the wrong path.
+
+| Monitor | GDI slots | Driven by | Recovers with |
+| --- | --- | --- | --- |
+| 2x P2725DE (sides) | `DISPLAY25-28` | **DisplayLink** over USB | `rtmon`, `Reset-Dock` |
+| P3425WE (centre) | `DISPLAY30-33` | **Intel Iris Xe** via the dock's alt-mode output | dock power-cycle only |
+
+The centre monitor hangs off the dock's **alt-mode output**: DisplayPort passed through to the
+laptop's own GPU, not rendered by DisplayLink. So:
+
+- `rtmon` resets failed DisplayLink devices and can never reach it. It used to log
+  "No failed DisplayLink adapters found" and stop, which read like a no-op rather than the
+  wrong tool; it now says so.
+- Updating the DisplayLink driver does not touch its video path either.
+
+Measured against this fault, none of these recovered it: cycling the dock's USB controller
+(`Reset-Dock -Depth Controller`), cycling the Intel GPU that owns the output, or cycling the
+UCSI connector manager. **Only a power-cycle of the dock at the wall has worked**, twice.
+USB-C alt mode is negotiated between the dock's PD controller and the laptop's PD/retimer
+chips, and Windows cannot re-drive that handshake - it only renegotiates on real power loss.
+
+### Where these drivers actually come from
+
+Neither ships through Windows Update, which reports zero updates even with optional ones
+included - so an empty update list is not evidence that things are current.
+
+| | Source |
+| --- | --- |
+| DisplayLink | `winget install DisplayLink.GraphicsDriver`, or Synaptics directly. The package also flashes the dock's own firmware, which tracks the driver version. |
+| Intel Iris Xe | Intel's installer. It is normally OEM-blocked on Surface, but this machine already runs a driver whose provider is "Intel Corporation" rather than Microsoft, so the direct route is open. |
+| Fallback | The Surface driver pack MSI, which must match the installed Windows build. |
+
+Because the dock's firmware ships inside the DisplayLink package, updating DisplayLink is
+still worth trying for an alt-mode fault even though it cannot touch that video path - the
+dock is the device failing to renegotiate.
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -388,3 +427,5 @@ Run `gmin -Detailed` after any hardware change to see what each monitor actually
 | Nothing happens after docking | Roles are resolved at call time from screen X. If Windows has not finished re-arranging displays, re-run. |
 | Brightness write "succeeds" but nothing changes | The monitor is showing its one-time power-consumption prompt and has stopped answering DDC. Press a button on the monitor to acknowledge it. |
 | `[DeskSwitch.Native] does not contain a method named ...` | That shell loaded an older version of the module. .NET cannot replace a type once it is in the AppDomain, so `Import-Module -Force` and re-sourcing `$PROFILE` both leave the old one in place. **Open a new window.** The module now detects this at import and says so. |
+| A monitor shows "no signal" and `fixmon` says it is not reachable | Its link is down, not merely detached - there is no EDID for anything to command. See the two display paths above: if it is on the dock's alt-mode output, only a dock power-cycle at the wall has ever recovered it. |
+| `rtmon` reports "no failed DisplayLink adapters" and does nothing | The missing monitor is not DisplayLink-driven, so `rtmon` is the wrong tool. It now says this instead of stopping silently. |
