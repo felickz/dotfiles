@@ -409,7 +409,7 @@ included - so an empty update list is not evidence that things are current.
 
 | | Source |
 | --- | --- |
-| DisplayLink | `winget install DisplayLink.GraphicsDriver`, or Synaptics directly. The package also flashes the dock's own firmware, which tracks the driver version. |
+| DisplayLink | `winget install DisplayLink.GraphicsDriver`, or Synaptics directly. The package also flashes the dock's own firmware, which tracks the driver version. Installing updates the tray app immediately but leaves the old kernel driver bound - the installer ships a DisplayLinkDriverSwapService that completes the swap on reboot, so check the driver version rather than the app's About box to confirm. |
 | Intel Iris Xe | Intel's installer. It is normally OEM-blocked on Surface, but this machine already runs a driver whose provider is "Intel Corporation" rather than Microsoft, so the direct route is open. |
 | Fallback | The Surface driver pack MSI, which must match the installed Windows build. |
 
