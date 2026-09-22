@@ -128,6 +128,38 @@ Get-DeepSleep      # Report the current state
 `DeepSleep` requires elevation and opens a UAC prompt when needed. It does not change
 DisplayLink video, Ethernet, USB, charging, wake devices, hibernation, or PowerToys Awake.
 
+## Sending a vendor diagnostic bundle
+
+Hardware vendors ship diagnostic collectors that gather far more than they need. A dock
+vendor troubleshooting a monitor wants EDID, display config, USB topology and driver
+versions, not your process list, software inventory, logged-on accounts or kernel crash
+dumps.
+
+[`pwsh/Sanitize-DiagnosticBundle.ps1`](pwsh/Sanitize-DiagnosticBundle.ps1) turns such a
+bundle into a sanitized sibling zip that is safe to email to support:
+
+```powershell
+.\pwsh\Sanitize-DiagnosticBundle.ps1 -Zip ~\Desktop\Plugabug_20260101.zip
+```
+
+It drops crash dumps, account and process lists, the software inventory and the network
+tables outright, and drops any **binary** file, because a binary cannot be reviewed or
+redacted. In what remains it redacts MAC addresses, non-loopback IPv4, GUIDs, the machine
+name and the user name. Monitor serials are kept by default, since support legitimately
+needs them and they reveal nothing about the machine; pass `-RedactSerials` to mask them.
+
+Files are classified by sniffing content, not by extension. That is not defensive
+programming for its own sake: a real Plugable bundle hid a 2.2 MB PE executable behind a
+`.tmp` name, which an extension allowlist happily ignored.
+
+The script then **verifies its own output zip** and reports `Verification`. Do not send a
+bundle that does not come back `Clean`.
+
+Environment-specific strings, such as an employer's private DNS suffix or the name of a
+corporate agent, do not belong in this repo, which is public. Put them in
+`%LOCALAPPDATA%\diagnostic-redactions.txt` as `literal=[PLACEHOLDER]` lines, or pass
+`-ExtraRedaction @{ 'contoso.local' = '[DNS]' }`.
+
 ## Cross-platform notes
 
 This repo is used from both Windows and macOS, so line endings are pinned in
