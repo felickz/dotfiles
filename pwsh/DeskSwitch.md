@@ -402,6 +402,32 @@ UCSI connector manager. **Only a power-cycle of the dock at the wall has worked*
 USB-C alt mode is negotiated between the dock's PD controller and the laptop's PD/retimer
 chips, and Windows cannot re-drive that handshake - it only renegotiates on real power loss.
 
+### Why the discrete GPU is not involved at all
+
+This laptop has an RTX 4060, but it drives no monitors:
+
+| Adapter | GDI display slots | Monitors attached |
+| --- | --- | --- |
+| Intel Iris Xe | 4 | laptop panel, alt-mode output |
+| DisplayLink | 4 | both side monitors |
+| **NVIDIA RTX 4060** | **0** | **none** |
+
+That is muxless hybrid graphics, not a misconfiguration. The physical display outputs - the
+internal panel and the USB-C lanes carrying DP alt mode - are wired to the Intel iGPU's
+display engine. The discrete GPU renders into its own memory and copies finished frames into
+Intel's framebuffer, and Intel scans them out. It never owns a display, so it has no display
+outputs to enumerate. The point is power: the iGPU can keep screens lit while the dGPU sleeps.
+
+Two consequences worth remembering:
+
+- **An NVIDIA driver update can never fix a monitor fault on this machine.** It owns no
+  outputs, so nothing it does reaches a display link.
+- **Intel is the display driver here** for everything that is not DisplayLink. That is why the
+  Intel driver being well out of date matters for the alt-mode fault, and why it is the one
+  worth updating.
+
+Games and GPU work still use the 4060 normally; only scan-out belongs to Intel.
+
 ### Where these drivers actually come from
 
 Neither ships through Windows Update, which reports zero updates even with optional ones
