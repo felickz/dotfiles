@@ -696,7 +696,41 @@ function Restart-Monitors {
     <#
     .SYNOPSIS
     Restarts failed DisplayLink adapters and monitor endpoints after waking from sleep.
+    .DESCRIPTION
+    This only ever helps a DisplayLink-driven monitor. A panel on the dock's alt-mode
+    passthrough is driven by the laptop's own GPU, not DisplayLink, so there is no failed
+    DisplayLink device for this to reset - it reports "no failed adapters found" and changes
+    nothing, which reads like a no-op rather than the wrong tool.
+
+    So before elevating, this checks whether a monitor is missing that this cannot fix, and
+    says what does work instead.
     #>
+    [CmdletBinding()]
+    param()
+
+    # Name the real problem before offering a fix that cannot reach it.
+    $deskLoaded = Get-Command Get-DeskMissingMonitor -ErrorAction SilentlyContinue
+    if ($deskLoaded) {
+        $missing = @(Get-DeskMissingMonitor)
+        if ($missing) {
+            $dlFailed = @(Get-PnpDevice -PresentOnly -Class Display -ErrorAction SilentlyContinue |
+                Where-Object { $_.Status -ne 'OK' -and $_.FriendlyName -match 'DisplayLink|Plugable' })
+
+            if (-not $dlFailed) {
+                Write-Warning ("Missing: {0} - and no DisplayLink adapter has failed." -f ($missing -join ', '))
+                Write-Host '  Restart-Monitors only resets DisplayLink devices, so it cannot reach this one.' -ForegroundColor Yellow
+                Write-Host '  A monitor on the dock''s alt-mode output is driven by the laptop GPU instead,' -ForegroundColor Yellow
+                Write-Host '  and its link only renegotiates on a real USB-C power loss. Measured here: cycling' -ForegroundColor Yellow
+                Write-Host '  the USB controller, the Intel GPU and the UCSI connector all failed to bring it back.' -ForegroundColor Yellow
+                Write-Host '  What works:' -ForegroundColor Yellow
+                Write-Host '    1. fixmon                         (if it is merely detached, this fixes it)' -ForegroundColor Cyan
+                Write-Host '    2. POWER-CYCLE THE DOCK at the wall - the only thing that has actually worked' -ForegroundColor Cyan
+                Write-Host '    3. Unplug/replug that monitor''s own cable' -ForegroundColor Cyan
+                return
+            }
+        }
+    }
+
     $script = @'
 $ErrorActionPreference = 'Stop'
 $log = Join-Path $env:TEMP 'restart-monitors.log'

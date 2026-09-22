@@ -14,7 +14,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `cpdep` | [`copilot-depcheck`](pwsh/Microsoft.PowerShell_profile.ps1#L309) | Copilot CLI with Dependabot dep vulnerability scanning |
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 | `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L695) | Wake USB-C dock monitors stuck after sleep (admin) |
-| `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L774) | Toggle multi-monitor extend <-> laptop screen only |
+| `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L808) | Toggle multi-monitor extend <-> laptop screen only |
 | `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L820) | Take all my monitors back (or hand over: swdesk mac \| personal) |
 | `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L656) | Show each monitor's role, current input (-Detailed = supported inputs) |
 | `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L682) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
@@ -34,7 +34,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `gcop` | [`Get-CopilotProcess`](pwsh/Microsoft.PowerShell_profile.ps1#L143) | Copilot CLI/app instances holding the shared plugin git cache |
 | `udgh` | [`Update-GhExtensions`](pwsh/Microsoft.PowerShell_profile.ps1#L230) | Update gh CLI extensions (skipped while Copilot runs; -Force) |
 | `udcp` | [`Update-CopilotPlugins`](pwsh/Microsoft.PowerShell_profile.ps1#L259) | Update Copilot CLI plugins (skipped while Copilot runs; -Force) |
-| `upql` | [`Upgrade-CodeQL`](pwsh/Microsoft.PowerShell_profile.ps1#L878) | Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref |
+| `upql` | [`Upgrade-CodeQL`](pwsh/Microsoft.PowerShell_profile.ps1#L912) | Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref |
 
 _Generated from the `$functions` summary in the profile - the same list printed at shell startup - by [`pwsh/Update-ReadmeFunctions.ps1`](pwsh/Update-ReadmeFunctions.ps1)._
 
