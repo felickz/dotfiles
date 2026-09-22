@@ -160,6 +160,38 @@ corporate agent, do not belong in this repo, which is public. Put them in
 `%LOCALAPPDATA%\diagnostic-redactions.txt` as `literal=[PLACEHOLDER]` lines, or pass
 `-ExtraRedaction @{ 'contoso.local' = '[DNS]' }`.
 
+## Reading USB-C alternate mode state
+
+When a USB-C dock stops driving a monitor, the useful question is whether DisplayPort
+alternate mode was negotiated at all. A device that cannot enter an Alternate Mode is
+supposed to expose a **USB Billboard device** saying so, and its capability descriptor
+carries the answer directly.
+
+[`pwsh/Read-BillboardDescriptor.ps1`](pwsh/Read-BillboardDescriptor.ps1) opens every
+Billboard device over WinUSB, reads the BOS descriptor and decodes the Billboard
+capability:
+
+```powershell
+.\pwsh\Read-BillboardDescriptor.ps1
+```
+
+```
+cap @5 len=48 : BILLBOARD
+  bNumberOfAlternateModes = 1
+  bAdditionalFailureInfo  = 0x00
+  mode[0]: SVID=0xFF01 (DisplayPort) bAlternateMode=1 -> successful
+```
+
+`bmConfigured` holds two bits per alternate mode: not attempted, attempted but
+unsuccessful, successful, or unspecified error. That turns "I think alt mode failed" into
+something checkable.
+
+Worth knowing before drawing conclusions from it: **a Billboard belongs to one specific
+device**, so trace its parent chain to the host controller before attributing it to a
+dock. On this machine the two Billboards live on a different xHCI controller than the
+Plugable dock, and both report DisplayPort configuration *successful*, so they had nothing
+to do with the dock fault they appeared to explain.
+
 ## Cross-platform notes
 
 This repo is used from both Windows and macOS, so line endings are pinned in
