@@ -443,6 +443,34 @@ Because the dock's firmware ships inside the DisplayLink package, updating Displ
 still worth trying for an alt-mode fault even though it cannot touch that video path - the
 dock is the device failing to renegotiate.
 
+That was tried. The 11.7 -> 12.2 upgrade completed after a reboot (driver 12.2.2412.0 dated
+2026-06-18, Ethernet 12.2.1708.0), and the dock still reports the same USB revision,
+`REV_3110`, so the DL chip firmware it carries was already current. The ultrawide did not
+come back. Worth doing for its own sake - a major version of link-stability fixes - but it is
+not a fix for this fault, and the alt-mode path remains power-cycle-only.
+
+### The dock's MST chipset firmware is a separate thing
+
+The DisplayLink package carries firmware for the **DisplayLink** chip, which drives the side
+monitors. The alt-mode output is handled by a different chip: a Synaptics **VMM5200
+DisplayPort MST** controller, whose firmware the DisplayLink package does not touch. That
+chip is the one negotiating the link that keeps failing, so its firmware is the remaining
+plausible software-level fix.
+
+Plugable publishes a VMM5200 firmware update guide, but **for the UD-3900C4, not the
+UD-ULTC4K**. Do not run it here: the guide states the update is one-way and the dock cannot
+be reflashed to the previous version, so a wrong-model flash is unrecoverable. There is no
+published tool for the UD-ULTC4K, and there are two hardware revisions of it, so Plugable
+handles this through support with the unit's serial number.
+
+If the fault keeps recurring, that is the request to make - quoting the exact symptom:
+
+> The DisplayPort alt-mode output stops being detected after Modern Standby. Windows reports
+> no EDID on any input, so the monitor is invisible to the OS rather than merely on the wrong
+> input. Cycling the dock's USB controller, the host GPU that owns the output, and the UCSI
+> connector manager all fail to recover it; only a physical power-cycle of the dock does.
+> DisplayLink is current at 12.2.2412.0 and the dock reports USB revision REV_3110.
+
 ## Troubleshooting
 
 | Symptom | Cause |
