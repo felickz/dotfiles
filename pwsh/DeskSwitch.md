@@ -12,7 +12,7 @@ gmin -Detailed    # what each monitor is on, and what it supports
 
 | Position | Monitor | Inputs it advertises | Used by |
 |---|---|---|---|
-| Left | Dell P2725D | DP, HDMI | main on DP, personal Surface on HDMI |
+| Left | Dell P2725DE | DP, HDMI, **USB-C** | main on DP, personal Surface on USB-C |
 | Center | Dell P3425WE (34" UW) | **USB-C**, DP, HDMI | main only |
 | Right | Dell P2725DE | DP, HDMI, **USB-C** | main on DP, Mac on USB-C |
 | Below | Surface Laptop Studio 2 panel | *(no DDC/CI)* | main |
@@ -21,7 +21,12 @@ gmin -Detailed    # what each monitor is on, and what it supports
 |---|---|---|---|
 | 1 | Surface Laptop Studio 2 | `SURFACESTUDIO2` | all three monitors on DP |
 | 2 | Mac M5 Pro | `H17MX7TXMT` | right monitor to USB-C |
-| 3 | Surface Laptop 5 | `SURFACE-LAPTOP5` | left monitor to HDMI |
+| 3 | Surface Laptop 5 | `SURFACE-LAPTOP5` | left monitor to USB-C |
+
+Only **DP** and **USB-C** are used in practice. HDMI is listed because the monitors
+advertise it, but nothing on this desk is wired to it - the left panel used to be a
+P2725D whose only second input was HDMI, and it was replaced by a USB-C P2725DE. Passing
+`HDMI` explicitly still works; nothing chooses it on your behalf.
 
 ## Why the Easy-Switch key is not the trigger
 
@@ -113,7 +118,7 @@ Both Windows machines run the same module. The profile map decides what each cla
 $Global:DeskProfiles = [ordered]@{
     main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
     mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
-    personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'HDMI' } }
+    personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'USBC' } }
 }
 ```
 
@@ -128,8 +133,14 @@ Register-DeskFollow       # or install it as a logon task (no admin needed)
 
 On the **personal Surface Laptop 5**, install the same module and keep the same map. It
 resolves `personal` from its own hostname and claims only the left monitor - and because
-that is the only monitor it can reach, `smin HDMI` and `smin Left HDMI` both work there
+that is the only monitor it can reach, `smin USBC` and `smin Left USBC` both work there
 without arguing about positions.
+
+> Editing this map is the whole upgrade path, and it is the one thing to re-check after a
+> monitor swap. When the left P2725D became a USB-C P2725DE this entry stayed on `HDMI`
+> for a while, so `swdesk` kept driving the panel to a dead input. A shell started before
+> the edit keeps the old map in memory, so re-run `. $PROFILE` or open a new window after
+> changing it.
 
 ## macOS setup (Mac M5 Pro)
 
