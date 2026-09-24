@@ -76,17 +76,18 @@ optional fallback. The profile supplies:
 ```bash
 swdesk list    # identify the external display
 swdesk status
+swdesk         # toggle USB-C (Mac) <-> DP (main PC)
 swdesk pc      # switch the Dell to the Windows PC's DisplayPort
 swdesk mac     # switch it back to the Mac's USB-C input
 ```
 
 `desk-monitor` remains the underlying command, and the older `desk-pc` and
-`desk-mac` convenience aliases remain available.
+`desk-mac` convenience aliases remain available. `swmon` is also retained as a macOS
+compatibility alias, although cross-platform scripts should use `swdesk`.
 
-> **`swmon` is Windows-only, and means something else there.** On Windows it is
-> `Switch-MonitorSetup`, which toggles the desktop between multi-monitor and laptop-only.
-> This Mac has no equivalent, so `swmon` is deliberately not defined here - it used to be,
-> which made `swmon list` look like a cross-platform command when it never was.
+> **`swmon` means something else on Windows.** There it is `Switch-MonitorSetup`, which
+> toggles the desktop between multi-monitor and laptop-only. The macOS alias is retained
+> for interactive compatibility only.
 >
 > | Job | Windows | macOS |
 > | --- | --- | --- |
@@ -98,6 +99,27 @@ The Dell input codes are version controlled in
 this Mac is USB-C to a single monitor, so there is nothing to choose between and the
 one it can see is used. Pass an index when several are attached
 (`swdesk pc 2`), or pin one with `DESK_MONITOR_DISPLAY` in the config.
+
+The USB-C cable matters. A third-party cable labeled Thunderbolt 4, USB4, and 40 Gbps
+delivered 90 W but exposed neither USB data nor DisplayPort Alt Mode on this setup.
+With the USB-C cable supplied with the P2725DE, macOS and DDPM continue to see the
+monitor while it is showing DP, so `swdesk pc` followed by bare `swdesk` completes the
+full handoff and reclaim cycle.
+
+On macOS, bare `swdesk` reads DDPM's active input and toggles it. Explicit `swdesk mac`
+and `swdesk pc` remain available when a specific destination is required.
+
+The installer also compiles a small source-controlled
+[`display-topology`](macos/src/display-topology.c) helper. When the Dell is handed to
+DP, the helper disables it from the macOS desktop so windows and the pointer cannot be
+stranded on a screen showing another computer. Reclaiming USB-C re-enables the desktop
+before switching the physical input. It uses an undocumented macOS API with
+session-scoped changes and refuses to touch the built-in or last active display.
+
+The source credits the MIT-licensed projects that informed the implementation:
+[macos-displayctl](https://github.com/hiberabyss/macos-displayctl) and
+[displayplacer](https://github.com/jakehilborn/displayplacer). Full notices are in
+[`macos/THIRD_PARTY_NOTICES.md`](macos/THIRD_PARTY_NOTICES.md).
 
 To create only the zsh profile link manually:
 

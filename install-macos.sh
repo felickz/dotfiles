@@ -37,6 +37,29 @@ link_path "$dotfiles_root/macos" "$config_root/macos"
 link_path "$dotfiles_root/macos/bin/desk-monitor" "$bin_root/desk-monitor"
 link_path "$dotfiles_root/.zshrc" "$zshrc"
 
+topology_source="$dotfiles_root/macos/src/display-topology.c"
+topology_target="$bin_root/display-topology"
+if [ ! -x "$topology_target" ] || [ "$topology_source" -nt "$topology_target" ]; then
+    if ! command -v clang >/dev/null 2>&1; then
+        printf '%s\n' \
+            "clang is required to build the macOS display topology helper." \
+            "Install Apple's Command Line Tools with: xcode-select --install" >&2
+        exit 1
+    fi
+
+    topology_temp="${topology_target}.tmp.$$"
+    trap 'rm -f "$topology_temp"' EXIT HUP INT TERM
+    clang -std=c11 -Wall -Wextra -Werror -O2 \
+        -framework ApplicationServices \
+        "$topology_source" -o "$topology_temp"
+    chmod 755 "$topology_temp"
+    mv "$topology_temp" "$topology_target"
+    trap - EXIT HUP INT TERM
+    printf 'Built: %s <- %s\n' "$topology_target" "$topology_source"
+else
+    printf 'Already built: %s\n' "$topology_target"
+fi
+
 if [ ! -x "/Applications/DDPM/DDPM.app/Contents/MacOS/DDPM" ] &&
     ! command -v m1ddc >/dev/null 2>&1; then
     printf '%s\n' \

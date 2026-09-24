@@ -163,6 +163,7 @@ The repository wraps this in a simpler, version-controlled setup:
 ./install-macos.sh
 swdesk list
 swdesk status
+swdesk              # toggle USB-C (Mac) <-> DP (main PC)
 swdesk pc           # input 15: DisplayPort 1, connected to the main Windows PC
 swdesk mac          # input 27: USB-C, connected to this Mac
 ```
@@ -178,6 +179,20 @@ repository and are therefore version controlled. If DDPM is absent, the wrapper 
 Automatically claiming USB-C on any Mac input can steal the screen when the built-in
 keyboard or trackpad is touched while the Logitech devices are still assigned to
 Windows.
+
+The cable is part of the DDC path. A third-party cable labeled Thunderbolt 4, USB4, and
+40 Gbps delivered 90 W but exposed neither USB data nor DisplayPort Alt Mode here. With
+the USB-C cable supplied with the P2725DE, macOS and DDPM keep the monitor enumerated
+while it is showing DP, and the Mac can reclaim it with bare `swdesk`.
+
+`install-macos.sh` also builds the repository's `display-topology` helper. `swdesk pc`
+switches the Dell to DP and then disables it from the macOS desktop; reclaiming it
+re-enables the desktop before selecting USB-C. The helper uses the private
+`CGSConfigureDisplayEnabled` API with session-scoped changes and safety checks. Its
+source credits the MIT-licensed
+[macos-displayctl](https://github.com/hiberabyss/macos-displayctl) and
+[displayplacer](https://github.com/jakehilborn/displayplacer) projects, with full
+license notices in `macos/THIRD_PARTY_NOTICES.md`.
 
 > DDPM supports this P2725DE on Apple Silicon. BetterDisplay exposes similar CLI
 > controls if neither DDPM nor `m1ddc` can see a future display.

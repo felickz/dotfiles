@@ -18,14 +18,16 @@ fi
 : "${DESK_MONITOR_MAC_INPUT:=27}"
 : "${DESK_MONITOR_PC_INPUT:=15}"
 : "${DDPM_BIN:=/Applications/DDPM/DDPM.app/Contents/MacOS/DDPM}"
+: "${DISPLAY_TOPOLOGY_BIN:=$HOME/.local/bin/display-topology}"
 
 usage() {
     cat <<'EOF'
-Usage: desk-monitor <mac|pc|status|list> [display]
+Usage: desk-monitor [toggle|mac|pc|status|list] [display]
 
+  toggle  Switch USB-C to DP, or DP to USB-C (default)
   mac     Switch the configured display to USB-C
   pc      Switch the configured display to DisplayPort
-  status  Show the configured display's active input
+  status  Show the configured display's topology and active input
   list    List displays detected by the selected backend
 
 The display is optional. When only one DDC-capable display is attached it is used
@@ -125,9 +127,11 @@ resolve_display() {
             ;;
         '')
             printf '%s\n' \
-                "desk-monitor: could not detect displays; assuming display 1." \
-                "Set DESK_MONITOR_DISPLAY in the config to pin one." >&2
-            DESK_MONITOR_DISPLAY=1
+                "desk-monitor: this Mac cannot currently see the Dell display." \
+                "Confirm the Dell is connected with a full-featured USB-C display cable." \
+                "A cable can deliver 90 W while still failing USB data and DisplayPort Alt Mode." \
+                "The USB-C cable supplied with the P2725DE is verified to work." >&2
+            exit 1
             ;;
         *)
             printf '%s\n' \
@@ -160,6 +164,95 @@ set_input() {
     fi
 }
 
+set_topology() {
+    state=$1
+
+    if [ ! -x "$DISPLAY_TOPOLOGY_BIN" ]; then
+        printf '%s\n' \
+            "desk-monitor: display-topology helper is not installed." \
+            "Run the repository's ./install-macos.sh." >&2
+        exit 127
+    fi
+
+    "$DISPLAY_TOPOLOGY_BIN" "$state"
+}
+
+switch_to_mac() {
+    set_topology enable
+    if ! set_input "$DESK_MONITOR_MAC_SOURCE" "$DESK_MONITOR_MAC_INPUT"; then
+        set_topology disable >/dev/null 2>&1 || true
+        return 1
+    fi
+}
+
+switch_to_pc() {
+    set_input "$DESK_MONITOR_PC_SOURCE" "$DESK_MONITOR_PC_INPUT"
+    set_topology disable
+}
+
+toggle_input() {
+    if [ -x "$DISPLAY_TOPOLOGY_BIN" ]; then
+        topology_state=$("$DISPLAY_TOPOLOGY_BIN" state)
+        if [ "$topology_state" = disabled ]; then
+            switch_to_mac
+            return
+        fi
+    fi
+
+    resolve_display
+
+    if [ "$backend" != ddpm ]; then
+        printf '%s\n' \
+            "desk-monitor: automatic toggle requires DDPM to read the active input." \
+            "Use 'swdesk mac' or 'swdesk pc' explicitly with the m1ddc backend." >&2
+        exit 1
+    fi
+
+    output=$("$DDPM_BIN" /get -Display=ActiveInputSource "-Index=$DESK_MONITOR_DISPLAY")
+    if ! printf '%s\n' "$output" | grep -q '"Result": "PASS"'; then
+        printf '%s\n' "$output"
+        exit 1
+    fi
+
+    current=$(printf '%s\n' "$output" |
+        sed -n 's/.*"Value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+        head -n 1)
+
+    case $current in
+        USB-C|USBC)
+            switch_to_pc
+            ;;
+        DP|DisplayPort|DisplayPort-1)
+            switch_to_mac
+            ;;
+        *)
+            printf 'desk-monitor: cannot toggle unknown active input: %s\n' "${current:-unknown}" >&2
+            exit 1
+            ;;
+    esac
+}
+
+show_status() {
+    if [ -x "$DISPLAY_TOPOLOGY_BIN" ]; then
+        topology_state=$("$DISPLAY_TOPOLOGY_BIN" state 2>/dev/null || true)
+        if [ "$topology_state" = disabled ]; then
+            printf '%s\n' \
+                "Topology: disabled" \
+                "Input: handed to the PC (DP); DDPM cannot query a display disabled by macOS."
+            return
+        fi
+        printf 'Topology: %s\n' "${topology_state:-unknown}"
+    fi
+
+    resolve_display
+    if [ "$backend" = ddpm ]; then
+        run_ddpm /get -Display=ActiveInputSource "-Index=$DESK_MONITOR_DISPLAY"
+    else
+        printf '%s\n' "m1ddc does not support reading the active input; use 'desk-monitor list'."
+        m1ddc display list detailed
+    fi
+}
+
 select_backend
 
 # An explicit display may follow the action: "desk-monitor pc 2".
@@ -167,21 +260,18 @@ if [ $# -ge 2 ] && [ -n "$2" ]; then
     DESK_MONITOR_DISPLAY=$2
 fi
 
-case ${1:-} in
+case ${1:-toggle} in
+    toggle)
+        toggle_input
+        ;;
     mac)
-        set_input "$DESK_MONITOR_MAC_SOURCE" "$DESK_MONITOR_MAC_INPUT"
+        switch_to_mac
         ;;
     pc)
-        set_input "$DESK_MONITOR_PC_SOURCE" "$DESK_MONITOR_PC_INPUT"
+        switch_to_pc
         ;;
     status)
-        resolve_display
-        if [ "$backend" = ddpm ]; then
-            run_ddpm /get -Display=ActiveInputSource "-Index=$DESK_MONITOR_DISPLAY"
-        else
-            printf '%s\n' "m1ddc does not support reading the active input; use 'desk-monitor list'."
-            m1ddc display list detailed
-        fi
+        show_status
         ;;
     list)
         if [ "$backend" = ddpm ]; then
