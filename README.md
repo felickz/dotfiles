@@ -14,9 +14,9 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `cpdep` | [`copilot-depcheck`](pwsh/Microsoft.PowerShell_profile.ps1#L309) | Copilot CLI with Dependabot dep vulnerability scanning |
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 |  | [`Go-Sleep`](pwsh/Microsoft.PowerShell_profile.ps1#L396) | Disconnect dock data during Modern Standby, then restore it on resume |
-| `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L854) | Wake USB-C dock monitors stuck after sleep (admin) |
-|  | [`Reset-Dock`](pwsh/Microsoft.PowerShell_profile.ps1#L714) | Recycle the dock in software instead of pulling the cable (admin) |
-| `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L967) | Toggle multi-monitor extend <-> laptop screen only |
+| `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L972) | Wake USB-C dock monitors stuck after sleep (admin) |
+|  | [`Reset-Dock`](pwsh/Microsoft.PowerShell_profile.ps1#L832) | Recycle the dock in software instead of pulling the cable (admin) |
+| `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L1085) | Toggle multi-monitor extend <-> laptop screen only |
 | `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L820) | Take all my monitors back (or hand over: swdesk mac \| personal) |
 | `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L656) | Show each monitor's role, current input (-Detailed = supported inputs) |
 | `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L682) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
@@ -37,7 +37,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `gcop` | [`Get-CopilotProcess`](pwsh/Microsoft.PowerShell_profile.ps1#L143) | Copilot CLI/app instances holding the shared plugin git cache |
 | `udgh` | [`Update-GhExtensions`](pwsh/Microsoft.PowerShell_profile.ps1#L230) | Update gh CLI extensions (skipped while Copilot runs; -Force) |
 | `udcp` | [`Update-CopilotPlugins`](pwsh/Microsoft.PowerShell_profile.ps1#L259) | Update Copilot CLI plugins (skipped while Copilot runs; -Force) |
-| `upql` | [`Upgrade-CodeQL`](pwsh/Microsoft.PowerShell_profile.ps1#L1071) | Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref |
+| `upql` | [`Upgrade-CodeQL`](pwsh/Microsoft.PowerShell_profile.ps1#L1189) | Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref |
 
 _Generated from the `$functions` summary in the profile - the same list printed at shell startup - by [`pwsh/Update-ReadmeFunctions.ps1`](pwsh/Update-ReadmeFunctions.ps1)._
 
@@ -144,20 +144,21 @@ The profile includes a reversible sleep optimization for the Surface Laptop Stud
 Plugable UD-ULTC4K dock:
 
 ```powershell
-DeepSleep On       # Disable standby networking, hybrid sleep, and unused dock audio
-DeepSleep Off      # Restore all three settings to their original enabled values
+DeepSleep On       # Optimize network, hybrid sleep, dock audio, and keyboard wake
+DeepSleep Off      # Restore all four settings to their original enabled values
 Get-DeepSleep      # Report the current state
 ```
 `DeepSleep` requires elevation and opens a UAC prompt when needed. It does not change
-DisplayLink video, Ethernet, USB, charging, wake devices, explicit hibernation, or
-PowerToys Awake. It also disables hybrid sleep so `Go-Sleep` does not write a hibernation
-image before entering sleep.
+DisplayLink video, Ethernet, USB, charging, explicit hibernation, or PowerToys Awake.
+It disables hybrid sleep so `Go-Sleep` does not write a hibernation image before entering
+sleep. Surface keyboard wake is also disabled while DeepSleep is on, so use the power
+button to wake the computer.
 
 `Go-Sleep` temporarily disables the Plugable dock's USB composite device, locks the
-workstation, and powers off the displays. Charging remains connected. On resume, an
-elevated helper restores the dock automatically. This works around the dock's physical
-USB Audio 2.0 function holding its USB controller active even while its Windows audio
-endpoint is disabled.
+workstation, and powers off the displays. Charging remains connected. A one-shot
+display-on scheduled task restores the dock after resume, then deletes itself. This
+works around the dock's physical USB Audio 2.0 function holding its USB controller
+active even while its Windows audio endpoint is disabled.
 
 ## Sending a vendor diagnostic bundle
 

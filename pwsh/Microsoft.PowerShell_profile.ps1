@@ -405,9 +405,9 @@ function Go-Sleep {
 
     SleepStudy proved that the dock's physical USB Audio 2.0 function keeps its TXHC
     controller active even while the Plugable Audio devnode is disabled. When the dock
-    is connected, an elevated helper disables only its USB composite device before
-    screen-off and re-enables it after resume. USB-C charging remains online while the
-    data path is disabled.
+    is connected, an elevated helper registers a one-shot display-on task, disables only
+    the dock's USB composite device, and exits. The task restores the dock after the
+    display turns on at resume. USB-C charging remains online while data is disabled.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
@@ -433,14 +433,102 @@ function Go-Sleep {
         $readyFile = Join-Path $env:TEMP "go-sleep-$PID.ready"
         Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
 
+        $taskName = 'GoSleep-RestoreDock'
+        $restoreScript = @'
+$ErrorActionPreference = 'Continue'
+$id = '__DOCK_ID__'
+$taskName = '__TASK_NAME__'
+$log = Join-Path $env:TEMP 'go-sleep-dock.log'
+
+"Restore triggered $(Get-Date -Format o)" | Add-Content $log
+Start-Sleep -Seconds 2
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+    & pnputil /enable-device $id | Add-Content $log
+    $problemCode = (Get-PnpDeviceProperty -InstanceId $id `
+        -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
+    if ($LASTEXITCODE -eq 0 -and $problemCode -eq 0) {
+        "Dock restored on attempt $attempt." | Add-Content $log
+        break
+    }
+    "Restore attempt $attempt failed (exit $LASTEXITCODE, problem $problemCode)." |
+        Add-Content $log
+    Start-Sleep -Seconds 3
+}
+& schtasks.exe /Delete /TN $taskName /F | Add-Content $log
+'@
+        $restoreScript = $restoreScript.Replace('__DOCK_ID__', $dock.InstanceId).
+            Replace('__TASK_NAME__', $taskName)
+        $restoreEncoded = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($restoreScript)
+        )
+        $subscription = @"
+<QueryList><Query Id="0" Path="Microsoft-Windows-Audio/Operational"><Select Path="Microsoft-Windows-Audio/Operational">*[System[(EventID=179)]] and *[EventData[Data[@Name='SessionDisplayOn']='true']]</Select></Query></QueryList>
+"@
+        $escapedSubscription = [Security.SecurityElement]::Escape($subscription.Trim())
+        $taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Author>Go-Sleep</Author></RegistrationInfo>
+  <Triggers>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>$escapedSubscription</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <LogonType>ServiceAccount</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -EncodedCommand $restoreEncoded</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+        $taskXmlEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskXml))
+
         $payload = @'
 $ErrorActionPreference = 'Stop'
 $id = '__DOCK_ID__'
 $readyFile = '__READY_FILE__'
+$taskName = '__TASK_NAME__'
+$taskXmlEncoded = '__TASK_XML__'
 $log = Join-Path $env:TEMP 'go-sleep-dock.log'
+$taskXmlPath = Join-Path $env:TEMP 'go-sleep-restore-task.xml'
 
 "Go-Sleep $(Get-Date -Format o)" | Set-Content $log
 try {
+    $taskXml = [Text.Encoding]::Unicode.GetString(
+        [Convert]::FromBase64String($taskXmlEncoded)
+    )
+    [IO.File]::WriteAllText($taskXmlPath, $taskXml, [Text.Encoding]::Unicode)
+    & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+    & schtasks.exe /Create /TN $taskName /XML $taskXmlPath /F | Add-Content $log
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not register the dock restore task (exit $LASTEXITCODE)."
+    }
+
     & pnputil /disable-device $id | Add-Content $log
     if ($LASTEXITCODE -ne 0) { throw "pnputil disable failed with exit code $LASTEXITCODE." }
 
@@ -449,21 +537,21 @@ try {
     if ($problemCode -ne 22) { throw "Dock did not disable (problem code $problemCode)." }
 
     New-Item -ItemType File -Path $readyFile -Force | Out-Null
-
-    # User-mode execution pauses in Modern Standby. This delay therefore completes
-    # shortly after resume, then the finally block restores the dock.
-    Start-Sleep -Seconds 30
+}
+catch {
+    "ERROR: $($_.Exception.Message)" | Add-Content $log
+    & pnputil /enable-device $id | Add-Content $log
+    & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+    throw
 }
 finally {
-    & pnputil /enable-device $id | Add-Content $log
-    if ($LASTEXITCODE -ne 0) {
-        "ERROR: pnputil enable failed with exit code $LASTEXITCODE." | Add-Content $log
-    }
-    Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item $taskXmlPath -Force -ErrorAction SilentlyContinue
 }
 '@
         $payload = $payload.Replace('__DOCK_ID__', $dock.InstanceId).
-            Replace('__READY_FILE__', $readyFile)
+            Replace('__READY_FILE__', $readyFile).
+            Replace('__TASK_NAME__', $taskName).
+            Replace('__TASK_XML__', $taskXmlEncoded)
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
 
         $sudo = Get-Command sudo.exe -ErrorAction SilentlyContinue
@@ -482,6 +570,7 @@ finally {
         if (-not (Test-Path $readyFile)) {
             throw "The dock did not disconnect. See $env:TEMP\go-sleep-dock.log."
         }
+        Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
     }
 
     if (-not ('DeepSleep.NativeMethods' -as [type])) {
@@ -536,6 +625,7 @@ function Get-DeepSleep {
       1. Network connectivity during Modern Standby is disabled on AC and battery.
       2. The unused Plugable UD-ULTC4K 3.5 mm audio interface is disabled.
       3. Hybrid sleep is disabled so Sleep does not write a hibernation image.
+      4. The Surface keyboard cannot wake the computer; use the power button instead.
 
     These settings fixed a Surface Laptop Studio 2 that stayed at 0% hardware and
     software low-power residency with the dock connected. A dock-free SleepStudy
@@ -575,16 +665,29 @@ function Get-DeepSleep {
                   elseif ($audioStates.Count -eq 1) { $audioStates[0] }
                   else { 'Mixed' }
 
+    $wakeCapable = @(powercfg /devicequery wake_from_any 2>$null)
+    $wakeArmed = @(powercfg /devicequery wake_armed 2>$null)
+    $surfaceKeyboards = @($wakeCapable | Where-Object { $_ -like 'Surface HID Keyboard*' })
+    $surfaceKeyboardWake = if (-not $surfaceKeyboards) {
+        'Not detected'
+    } elseif ($surfaceKeyboards | Where-Object { $_ -in $wakeArmed }) {
+        'Enabled'
+    } else {
+        'Disabled'
+    }
+
     $networkAc = switch ($acValue) { 0 { 'Disabled' } 1 { 'Enabled' } 2 { 'Managed' } default { 'Unknown' } }
     $networkDc = switch ($dcValue) { 0 { 'Disabled' } 1 { 'Enabled' } 2 { 'Managed' } default { 'Unknown' } }
     $hybridAc = switch ($hybridAcValue) { 0 { 'Disabled' } 1 { 'Enabled' } default { 'Unknown' } }
     $hybridDc = switch ($hybridDcValue) { 0 { 'Disabled' } 1 { 'Enabled' } default { 'Unknown' } }
     $state = if ($acValue -eq 0 -and $dcValue -eq 0 -and
                  $hybridAcValue -eq 0 -and $hybridDcValue -eq 0 -and
+                 $surfaceKeyboardWake -eq 'Disabled' -and
                  $audioState -eq 'Disabled') {
         'On'
     } elseif ($acValue -eq 1 -and $dcValue -eq 1 -and
               $hybridAcValue -eq 1 -and $hybridDcValue -eq 1 -and
+              $surfaceKeyboardWake -eq 'Enabled' -and
               $audioState -eq 'Enabled') {
         'Off'
     } else {
@@ -598,6 +701,7 @@ function Get-DeepSleep {
         HybridSleepOnAC      = $hybridAc
         HybridSleepOnDC      = $hybridDc
         PlugableAudio        = $audioState
+        SurfaceKeyboardWake  = $surfaceKeyboardWake
     }
 }
 
@@ -608,7 +712,8 @@ function Set-DeepSleep {
     .PARAMETER State
     On disables standby networking on AC/DC and disables the Plugable dock's
     unused 3.5 mm audio interface. It also disables hybrid sleep so a Sleep request
-    does not write a hibernation image. Off restores all three settings.
+    does not write a hibernation image, and disables Surface keyboard wake. Off
+    restores all four settings.
     .EXAMPLE
     DeepSleep On
     .EXAMPLE
@@ -630,7 +735,7 @@ function Set-DeepSleep {
     $networkValue = if ($State -eq 'On') { 0 } else { 1 }
     $hybridValue = if ($State -eq 'On') { 0 } else { 1 }
     $deviceVerb = if ($State -eq 'On') { 'Disable' } else { 'Enable' }
-    $description = "$deviceVerb standby networking, hybrid sleep, and Plugable Audio"
+    $description = "$deviceVerb standby networking, hybrid sleep, Plugable Audio, and Surface keyboard wake"
     if (-not $PSCmdlet.ShouldProcess('Windows power and Plugable dock audio settings', $description)) {
         return
     }
@@ -669,6 +774,19 @@ foreach ($device in $audioDevices) {
         Disable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
     } elseif ($state -eq 'Off' -and $problemCode -eq 22) {
         Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false
+    }
+}
+
+$surfaceKeyboards = @(powercfg /devicequery wake_from_any 2>$null |
+    Where-Object { $_ -like 'Surface HID Keyboard*' })
+foreach ($keyboard in $surfaceKeyboards) {
+    if ($state -eq 'On') {
+        & powercfg /devicedisablewake $keyboard
+    } else {
+        & powercfg /deviceenablewake $keyboard
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "powercfg failed while updating wake for '$keyboard'."
     }
 }
 
