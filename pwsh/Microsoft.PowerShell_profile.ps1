@@ -393,6 +393,32 @@ function Restart-Explorer {
     else        { Write-Warning "Explorer did not come back. Start it from Task Manager > Run new task > explorer.exe" }
 }
 
+function Go-Sleep {
+    <#
+    .SYNOPSIS
+    Puts the local computer into Sleep.
+    .DESCRIPTION
+    Uses the Windows power-management API because shutdown.exe has no Sleep option.
+    Unlike shutdown /h, this requests Sleep rather than Hibernate.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
+    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Enter Sleep')) {
+        return
+    }
+
+    Add-Type -AssemblyName System.Windows.Forms
+    $suspended = [System.Windows.Forms.Application]::SetSuspendState(
+        [System.Windows.Forms.PowerState]::Suspend,
+        $false,
+        $false
+    )
+    if (-not $suspended) {
+        throw 'Windows declined the Sleep request.'
+    }
+}
+
 function Get-DeepSleep {
     <#
     .SYNOPSIS
@@ -1183,6 +1209,7 @@ $functions = @(
     @{ Alias = "cpghas";  Name = "copilot-ghas";                 Desc = "Copilot CLI with GHAS MCP toolsets" }
     @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
+    @{ Alias = "";        Name = "Go-Sleep";                     Desc = "Put the computer into Sleep (not Hibernate)" }
     @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
     @{ Alias = "";        Name = "Reset-Dock";                   Desc = "Recycle the dock in software instead of pulling the cable (admin)" }
     @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle multi-monitor extend <-> laptop screen only" }
