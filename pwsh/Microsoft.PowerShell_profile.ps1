@@ -433,102 +433,32 @@ function Go-Sleep {
         $readyFile = Join-Path $env:TEMP "go-sleep-$PID.ready"
         Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
 
-        $taskName = 'GoSleep-RestoreDock'
-        $restoreScript = @'
-$ErrorActionPreference = 'Continue'
-$id = '__DOCK_ID__'
-$taskName = '__TASK_NAME__'
-$log = Join-Path $env:TEMP 'go-sleep-dock.log'
-
-"Restore triggered $(Get-Date -Format o)" | Add-Content $log
-Start-Sleep -Seconds 2
-for ($attempt = 1; $attempt -le 5; $attempt++) {
-    & pnputil /enable-device $id | Add-Content $log
-    $problemCode = (Get-PnpDeviceProperty -InstanceId $id `
-        -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
-    if ($LASTEXITCODE -eq 0 -and $problemCode -eq 0) {
-        "Dock restored on attempt $attempt." | Add-Content $log
-        break
-    }
-    "Restore attempt $attempt failed (exit $LASTEXITCODE, problem $problemCode)." |
-        Add-Content $log
-    Start-Sleep -Seconds 3
-}
-& schtasks.exe /Delete /TN $taskName /F | Add-Content $log
-'@
-        $restoreScript = $restoreScript.Replace('__DOCK_ID__', $dock.InstanceId).
-            Replace('__TASK_NAME__', $taskName)
-        $restoreEncoded = [Convert]::ToBase64String(
-            [Text.Encoding]::Unicode.GetBytes($restoreScript)
-        )
-        $subscription = @"
-<QueryList><Query Id="0" Path="Microsoft-Windows-Audio/Operational"><Select Path="Microsoft-Windows-Audio/Operational">*[System[(EventID=179)]] and *[EventData[Data[@Name='SessionDisplayOn']='true']]</Select></Query></QueryList>
-"@
-        $escapedSubscription = [Security.SecurityElement]::Escape($subscription.Trim())
-        $taskXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Author>Go-Sleep</Author></RegistrationInfo>
-  <Triggers>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>$escapedSubscription</Subscription>
-    </EventTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <LogonType>ServiceAccount</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>true</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
-    <Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -ExecutionPolicy Bypass -EncodedCommand $restoreEncoded</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-        $taskXmlEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskXml))
-
         $payload = @'
 $ErrorActionPreference = 'Stop'
 $id = '__DOCK_ID__'
 $readyFile = '__READY_FILE__'
-$taskName = '__TASK_NAME__'
-$taskXmlEncoded = '__TASK_XML__'
 $payloadPath = '__PAYLOAD_PATH__'
 $log = Join-Path $env:TEMP 'go-sleep-dock.log'
-$taskXmlPath = Join-Path $env:TEMP 'go-sleep-restore-task.xml'
 
 "Go-Sleep $(Get-Date -Format o)" | Set-Content $log
-try {
-    $taskXml = [Text.Encoding]::Unicode.GetString(
-        [Convert]::FromBase64String($taskXmlEncoded)
-    )
-    [IO.File]::WriteAllText($taskXmlPath, $taskXml, [Text.Encoding]::Unicode)
-    & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
-    & schtasks.exe /Create /TN $taskName /XML $taskXmlPath /F | Add-Content $log
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not register the dock restore task (exit $LASTEXITCODE)."
+$queryText = "*[System[(EventID=179)]] and *[EventData[Data[@Name='SessionDisplayOn']='true']]"
+$query = [Diagnostics.Eventing.Reader.EventLogQuery]::new(
+    'Microsoft-Windows-Audio/Operational',
+    [Diagnostics.Eventing.Reader.PathType]::LogName,
+    $queryText
+)
+$watcher = [Diagnostics.Eventing.Reader.EventLogWatcher]::new($query)
+$signal = [Threading.AutoResetEvent]::new($false)
+$sourceIdentifier = "GoSleep.DisplayOn.$PID"
+$subscription = Register-ObjectEvent -InputObject $watcher -EventName EventRecordWritten `
+    -SourceIdentifier $sourceIdentifier -MessageData $signal -Action {
+        if (-not $Event.SourceEventArgs.EventException) {
+            [void]$Event.MessageData.Set()
+        }
     }
+
+try {
+    $watcher.Enabled = $true
 
     & pnputil /disable-device $id | Add-Content $log
     if ($LASTEXITCODE -ne 0) { throw "pnputil disable failed with exit code $LASTEXITCODE." }
@@ -538,49 +468,63 @@ try {
     if ($problemCode -ne 22) { throw "Dock did not disable (problem code $problemCode)." }
 
     New-Item -ItemType File -Path $readyFile -Force | Out-Null
+    "Dock disabled; waiting for display-on event." | Add-Content $log
+    [void]$signal.WaitOne()
+    "Display-on event received $(Get-Date -Format o)." | Add-Content $log
 }
 catch {
     "ERROR: $($_.Exception.Message)" | Add-Content $log
-    & pnputil /enable-device $id | Add-Content $log
-    & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
     throw
 }
 finally {
-    Remove-Item $taskXmlPath -Force -ErrorAction SilentlyContinue
+    $watcher.Enabled = $false
+    Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
+    Remove-Job -Name $sourceIdentifier -Force -ErrorAction SilentlyContinue
+    $watcher.Dispose()
+    $signal.Dispose()
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        & pnputil /enable-device $id | Add-Content $log
+        $problemCode = (Get-PnpDeviceProperty -InstanceId $id `
+            -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
+        if ($LASTEXITCODE -eq 0 -and $problemCode -eq 0) {
+            "Dock restored on attempt $attempt." | Add-Content $log
+            break
+        }
+        "Restore attempt $attempt failed (exit $LASTEXITCODE, problem $problemCode)." |
+            Add-Content $log
+        Start-Sleep -Seconds 3
+    }
+
+    Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
     Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
 }
 '@
         $payloadPath = Join-Path $env:TEMP "go-sleep-$PID.ps1"
         $payload = $payload.Replace('__DOCK_ID__', $dock.InstanceId).
             Replace('__READY_FILE__', $readyFile).
-            Replace('__TASK_NAME__', $taskName).
-            Replace('__TASK_XML__', $taskXmlEncoded).
             Replace('__PAYLOAD_PATH__', $payloadPath)
         [IO.File]::WriteAllText($payloadPath, $payload, [Text.Encoding]::Unicode)
 
-        $sudo = Get-Command sudo.exe -ErrorAction SilentlyContinue
-        if ($sudo) {
-            & $sudo.Source powershell.exe -NoProfile -ExecutionPolicy Bypass -File $payloadPath
-            if ($LASTEXITCODE -ne 0) {
-                Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
-                throw "The elevated dock helper failed with exit code $LASTEXITCODE."
-            }
-        } else {
-            $helper = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile',
-                '-ExecutionPolicy', 'Bypass', '-File', "`"$payloadPath`""
-            if ($helper.ExitCode -ne 0) {
-                Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
-                throw "The elevated dock helper failed with exit code $($helper.ExitCode)."
-            }
+        try {
+            $helper = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru `
+                -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$payloadPath`""
+        }
+        catch {
+            Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
+            throw "The elevated dock helper could not start: $($_.Exception.Message)"
         }
 
         $deadline = (Get-Date).AddSeconds(20)
-        while (-not (Test-Path $readyFile) -and (Get-Date) -lt $deadline) {
+        while (-not (Test-Path $readyFile) -and -not $helper.HasExited -and
+               (Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 250
+            $helper.Refresh()
         }
         if (-not (Test-Path $readyFile)) {
             Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
-            throw "The dock did not disconnect. See $env:TEMP\go-sleep-dock.log."
+            $exitDetail = if ($helper.HasExited) { " (helper exit $($helper.ExitCode))" } else { '' }
+            throw "The dock did not disconnect$exitDetail. See $env:TEMP\go-sleep-dock.log."
         }
         Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
     }
