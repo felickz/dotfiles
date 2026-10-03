@@ -560,11 +560,18 @@ finally {
 
         $sudo = Get-Command sudo.exe -ErrorAction SilentlyContinue
         if ($sudo) {
-            Start-Process $sudo.Source -ArgumentList 'powershell.exe', '-NoProfile',
-                '-ExecutionPolicy', 'Bypass', '-File', "`"$payloadPath`""
+            & $sudo.Source powershell.exe -NoProfile -ExecutionPolicy Bypass -File $payloadPath
+            if ($LASTEXITCODE -ne 0) {
+                Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
+                throw "The elevated dock helper failed with exit code $LASTEXITCODE."
+            }
         } else {
-            Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile',
+            $helper = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile',
                 '-ExecutionPolicy', 'Bypass', '-File', "`"$payloadPath`""
+            if ($helper.ExitCode -ne 0) {
+                Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
+                throw "The elevated dock helper failed with exit code $($helper.ExitCode)."
+            }
         }
 
         $deadline = (Get-Date).AddSeconds(20)
