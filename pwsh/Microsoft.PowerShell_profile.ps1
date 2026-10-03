@@ -396,39 +396,61 @@ function Restart-Explorer {
 function Go-Sleep {
     <#
     .SYNOPSIS
-    Puts the local computer into Sleep.
+    Locks the computer and starts its Modern Standby transition.
     .DESCRIPTION
-    Uses the Windows power-management API because shutdown.exe has no Sleep option.
-    Refuses to run while hybrid sleep is enabled because that setting writes a
-    hibernation image before sleeping. Run DeepSleep On first.
+    Modern Standby is S0 low-power idle, not legacy S1-S3 sleep. The legacy
+    SetSuspendState API selects S4 hibernation on this computer, so this function
+    instead locks the workstation and powers off the displays. Screen-off is the
+    supported entry path into Modern Standby.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
 
-    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Enter Sleep')) {
+    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Lock and enter Modern Standby')) {
         return
     }
 
-    $hybridOutput = powercfg /query SCHEME_CURRENT SUB_SLEEP HYBRIDSLEEP 2>&1 | Out-String
-    $hybridAc = if ($hybridOutput -match 'Current AC Power Setting Index:\s+0x([0-9a-f]+)') {
-        [Convert]::ToInt32($matches[1], 16)
+    if (-not ('DeepSleep.NativeMethods' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace DeepSleep
+{
+    public static class NativeMethods
+    {
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool LockWorkStation();
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SendMessage(
+            IntPtr hWnd,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam);
     }
-    $hybridDc = if ($hybridOutput -match 'Current DC Power Setting Index:\s+0x([0-9a-f]+)') {
-        [Convert]::ToInt32($matches[1], 16)
-    }
-    if ($hybridAc -ne 0 -or $hybridDc -ne 0) {
-        throw 'Hybrid sleep is enabled and may write a hibernation image. Run DeepSleep On, then retry Go-Sleep.'
+}
+'@
     }
 
-    Add-Type -AssemblyName System.Windows.Forms
-    $suspended = [System.Windows.Forms.Application]::SetSuspendState(
-        [System.Windows.Forms.PowerState]::Suspend,
-        $false,
-        $false
-    )
-    if (-not $suspended) {
-        throw 'Windows declined the Sleep request.'
+    if (-not [DeepSleep.NativeMethods]::LockWorkStation()) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "Windows declined the workstation lock request (Win32 error $errorCode)."
     }
+
+    Start-Sleep -Milliseconds 750
+
+    $hwndBroadcast = [IntPtr]0xffff
+    $wmSysCommand = 0x0112
+    $scMonitorPower = [IntPtr]0xf170
+    $monitorOff = [IntPtr]2
+    [void][DeepSleep.NativeMethods]::SendMessage(
+        $hwndBroadcast,
+        $wmSysCommand,
+        $scMonitorPower,
+        $monitorOff
+    )
 }
 
 function Get-DeepSleep {
@@ -1246,7 +1268,7 @@ $functions = @(
     @{ Alias = "cpghas";  Name = "copilot-ghas";                 Desc = "Copilot CLI with GHAS MCP toolsets" }
     @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
-    @{ Alias = "";        Name = "Go-Sleep";                     Desc = "Put the computer into Sleep (not Hibernate)" }
+    @{ Alias = "";        Name = "Go-Sleep";                     Desc = "Lock and turn off displays to enter Modern Standby" }
     @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
     @{ Alias = "";        Name = "Reset-Dock";                   Desc = "Recycle the dock in software instead of pulling the cable (admin)" }
     @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle multi-monitor extend <-> laptop screen only" }
