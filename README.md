@@ -14,9 +14,9 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `cpdep` | [`copilot-depcheck`](pwsh/Microsoft.PowerShell_profile.ps1#L309) | Copilot CLI with Dependabot dep vulnerability scanning |
 | `rtexp` | [`Restart-Explorer`](pwsh/Microsoft.PowerShell_profile.ps1#L335) | Kill and restart Windows Explorer + itype.exe |
 |  | [`Go-Sleep`](pwsh/Microsoft.PowerShell_profile.ps1#L396) | Put the computer into Sleep (not Hibernate) |
-| `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L721) | Wake USB-C dock monitors stuck after sleep (admin) |
-|  | [`Reset-Dock`](pwsh/Microsoft.PowerShell_profile.ps1#L581) | Recycle the dock in software instead of pulling the cable (admin) |
-| `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L834) | Toggle multi-monitor extend <-> laptop screen only |
+| `rtmon` | [`Restart-Monitors`](pwsh/Microsoft.PowerShell_profile.ps1#L758) | Wake USB-C dock monitors stuck after sleep (admin) |
+|  | [`Reset-Dock`](pwsh/Microsoft.PowerShell_profile.ps1#L618) | Recycle the dock in software instead of pulling the cable (admin) |
+| `swmon` | [`Switch-MonitorSetup`](pwsh/Microsoft.PowerShell_profile.ps1#L871) | Toggle multi-monitor extend <-> laptop screen only |
 | `swdesk` | [`Switch-DeskProfile`](pwsh/DeskSwitch.psm1#L820) | Take all my monitors back (or hand over: swdesk mac \| personal) |
 | `gmin` | [`Get-MonitorInput`](pwsh/DeskSwitch.psm1#L656) | Show each monitor's role, current input (-Detailed = supported inputs) |
 | `smin` | [`Set-MonitorInput`](pwsh/DeskSwitch.psm1#L682) | Set a monitor's input, e.g. smin DP \| smin Right HDMI |
@@ -37,7 +37,7 @@ Personal dotfiles for Windows / PowerShell and macOS / zsh.
 | `gcop` | [`Get-CopilotProcess`](pwsh/Microsoft.PowerShell_profile.ps1#L143) | Copilot CLI/app instances holding the shared plugin git cache |
 | `udgh` | [`Update-GhExtensions`](pwsh/Microsoft.PowerShell_profile.ps1#L230) | Update gh CLI extensions (skipped while Copilot runs; -Force) |
 | `udcp` | [`Update-CopilotPlugins`](pwsh/Microsoft.PowerShell_profile.ps1#L259) | Update Copilot CLI plugins (skipped while Copilot runs; -Force) |
-| `upql` | [`Upgrade-CodeQL`](pwsh/Microsoft.PowerShell_profile.ps1#L938) | Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref |
+| `upql` | [`Upgrade-CodeQL`](pwsh/Microsoft.PowerShell_profile.ps1#L975) | Install latest (or -Version pinned) CodeQL bundle + sync ql submodule ref |
 
 _Generated from the `$functions` summary in the profile - the same list printed at shell startup - by [`pwsh/Update-ReadmeFunctions.ps1`](pwsh/Update-ReadmeFunctions.ps1)._
 
@@ -144,12 +144,14 @@ The profile includes a reversible sleep optimization for the Surface Laptop Stud
 Plugable UD-ULTC4K dock:
 
 ```powershell
-DeepSleep On       # Disable standby networking and the unused dock audio interface
-DeepSleep Off      # Restore both settings to their original enabled values
+DeepSleep On       # Disable standby networking, hybrid sleep, and unused dock audio
+DeepSleep Off      # Restore all three settings to their original enabled values
 Get-DeepSleep      # Report the current state
 ```
 `DeepSleep` requires elevation and opens a UAC prompt when needed. It does not change
-DisplayLink video, Ethernet, USB, charging, wake devices, hibernation, or PowerToys Awake.
+DisplayLink video, Ethernet, USB, charging, wake devices, explicit hibernation, or
+PowerToys Awake. It also disables hybrid sleep so `Go-Sleep` does not write a hibernation
+image before entering sleep.
 
 ## Sending a vendor diagnostic bundle
 

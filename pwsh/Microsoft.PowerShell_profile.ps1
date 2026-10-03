@@ -399,13 +399,25 @@ function Go-Sleep {
     Puts the local computer into Sleep.
     .DESCRIPTION
     Uses the Windows power-management API because shutdown.exe has no Sleep option.
-    Unlike shutdown /h, this requests Sleep rather than Hibernate.
+    Refuses to run while hybrid sleep is enabled because that setting writes a
+    hibernation image before sleeping. Run DeepSleep On first.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
 
     if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Enter Sleep')) {
         return
+    }
+
+    $hybridOutput = powercfg /query SCHEME_CURRENT SUB_SLEEP HYBRIDSLEEP 2>&1 | Out-String
+    $hybridAc = if ($hybridOutput -match 'Current AC Power Setting Index:\s+0x([0-9a-f]+)') {
+        [Convert]::ToInt32($matches[1], 16)
+    }
+    $hybridDc = if ($hybridOutput -match 'Current DC Power Setting Index:\s+0x([0-9a-f]+)') {
+        [Convert]::ToInt32($matches[1], 16)
+    }
+    if ($hybridAc -ne 0 -or $hybridDc -ne 0) {
+        throw 'Hybrid sleep is enabled and may write a hibernation image. Run DeepSleep On, then retry Go-Sleep.'
     }
 
     Add-Type -AssemblyName System.Windows.Forms
@@ -427,6 +439,7 @@ function Get-DeepSleep {
     DeepSleep On means:
       1. Network connectivity during Modern Standby is disabled on AC and battery.
       2. The unused Plugable UD-ULTC4K 3.5 mm audio interface is disabled.
+      3. Hybrid sleep is disabled so Sleep does not write a hibernation image.
 
     These settings fixed a Surface Laptop Studio 2 that stayed at 0% hardware and
     software low-power residency with the dock connected. A dock-free SleepStudy
@@ -438,11 +451,18 @@ function Get-DeepSleep {
 
     $networkSetting = 'F15576E8-98B7-4186-B944-EAFA664402D9'
     $powerOutput = powercfg /qh SCHEME_CURRENT SUB_NONE $networkSetting 2>&1 | Out-String
+    $hybridOutput = powercfg /query SCHEME_CURRENT SUB_SLEEP HYBRIDSLEEP 2>&1 | Out-String
 
     $acValue = if ($powerOutput -match 'Current AC Power Setting Index:\s+0x([0-9a-f]+)') {
         [Convert]::ToInt32($matches[1], 16)
     }
     $dcValue = if ($powerOutput -match 'Current DC Power Setting Index:\s+0x([0-9a-f]+)') {
+        [Convert]::ToInt32($matches[1], 16)
+    }
+    $hybridAcValue = if ($hybridOutput -match 'Current AC Power Setting Index:\s+0x([0-9a-f]+)') {
+        [Convert]::ToInt32($matches[1], 16)
+    }
+    $hybridDcValue = if ($hybridOutput -match 'Current DC Power Setting Index:\s+0x([0-9a-f]+)') {
         [Convert]::ToInt32($matches[1], 16)
     }
 
@@ -461,9 +481,15 @@ function Get-DeepSleep {
 
     $networkAc = switch ($acValue) { 0 { 'Disabled' } 1 { 'Enabled' } 2 { 'Managed' } default { 'Unknown' } }
     $networkDc = switch ($dcValue) { 0 { 'Disabled' } 1 { 'Enabled' } 2 { 'Managed' } default { 'Unknown' } }
-    $state = if ($acValue -eq 0 -and $dcValue -eq 0 -and $audioState -eq 'Disabled') {
+    $hybridAc = switch ($hybridAcValue) { 0 { 'Disabled' } 1 { 'Enabled' } default { 'Unknown' } }
+    $hybridDc = switch ($hybridDcValue) { 0 { 'Disabled' } 1 { 'Enabled' } default { 'Unknown' } }
+    $state = if ($acValue -eq 0 -and $dcValue -eq 0 -and
+                 $hybridAcValue -eq 0 -and $hybridDcValue -eq 0 -and
+                 $audioState -eq 'Disabled') {
         'On'
-    } elseif ($acValue -eq 1 -and $dcValue -eq 1 -and $audioState -eq 'Enabled') {
+    } elseif ($acValue -eq 1 -and $dcValue -eq 1 -and
+              $hybridAcValue -eq 1 -and $hybridDcValue -eq 1 -and
+              $audioState -eq 'Enabled') {
         'Off'
     } else {
         'Partial'
@@ -473,6 +499,8 @@ function Get-DeepSleep {
         DeepSleep            = $state
         StandbyNetworkOnAC   = $networkAc
         StandbyNetworkOnDC   = $networkDc
+        HybridSleepOnAC      = $hybridAc
+        HybridSleepOnDC      = $hybridDc
         PlugableAudio        = $audioState
     }
 }
@@ -483,7 +511,8 @@ function Set-DeepSleep {
     Enables or reverts the verified Modern Standby optimizations.
     .PARAMETER State
     On disables standby networking on AC/DC and disables the Plugable dock's
-    unused 3.5 mm audio interface. Off restores standby networking and Plugable Audio.
+    unused 3.5 mm audio interface. It also disables hybrid sleep so a Sleep request
+    does not write a hibernation image. Off restores all three settings.
     .EXAMPLE
     DeepSleep On
     .EXAMPLE
@@ -491,9 +520,9 @@ function Set-DeepSleep {
     .EXAMPLE
     Get-DeepSleep
     .NOTES
-    Requires elevation. If needed, the function opens one UAC prompt and performs only
-    the two changes documented above. PlatformAoAcOverride, wake devices, hibernation
-    timers, PowerToys Awake, DisplayLink video, Ethernet, USB, and charging are untouched.
+    Requires elevation. If needed, the function opens one UAC prompt. PlatformAoAcOverride,
+    wake devices, hibernation timers, PowerToys Awake, DisplayLink video, Ethernet, USB,
+    charging, and the ability to hibernate explicitly are untouched.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -503,8 +532,9 @@ function Set-DeepSleep {
     )
 
     $networkValue = if ($State -eq 'On') { 0 } else { 1 }
+    $hybridValue = if ($State -eq 'On') { 0 } else { 1 }
     $deviceVerb = if ($State -eq 'On') { 'Disable' } else { 'Enable' }
-    $description = "$deviceVerb standby networking and Plugable Audio"
+    $description = "$deviceVerb standby networking, hybrid sleep, and Plugable Audio"
     if (-not $PSCmdlet.ShouldProcess('Windows power and Plugable dock audio settings', $description)) {
         return
     }
@@ -513,12 +543,17 @@ function Set-DeepSleep {
 $ErrorActionPreference = 'Stop'
 $state = '__STATE__'
 $networkValue = __NETWORK_VALUE__
+$hybridValue = __HYBRID_VALUE__
 $networkSetting = 'F15576E8-98B7-4186-B944-EAFA664402D9'
 
 foreach ($powerSource in 'ac', 'dc') {
     & powercfg "/set${powerSource}valueindex" SCHEME_CURRENT SUB_NONE $networkSetting $networkValue
     if ($LASTEXITCODE -ne 0) {
         throw "powercfg failed while updating the $powerSource standby-network setting."
+    }
+    & powercfg "/set${powerSource}valueindex" SCHEME_CURRENT SUB_SLEEP HYBRIDSLEEP $hybridValue
+    if ($LASTEXITCODE -ne 0) {
+        throw "powercfg failed while updating the $powerSource hybrid-sleep setting."
     }
 }
 & powercfg /setactive SCHEME_CURRENT
@@ -529,7 +564,7 @@ $audioDevices = @(Get-PnpDevice -Class MEDIA -ErrorAction SilentlyContinue | Whe
     $_.InstanceId -like 'USB\VID_17E9&PID_6011&MI_02\*'
 })
 if (-not $audioDevices) {
-    Write-Warning 'No known Plugable Audio interface was found. The network setting was still updated.'
+    Write-Warning 'No known Plugable Audio interface was found. The power settings were still updated.'
 }
 foreach ($device in $audioDevices) {
     $problemCode = (Get-PnpDeviceProperty -InstanceId $device.InstanceId `
@@ -544,7 +579,9 @@ foreach ($device in $audioDevices) {
 Write-Host "DeepSleep $state applied." -ForegroundColor Green
 Write-Host 'Close this window, then run Get-DeepSleep in your normal shell to verify.' -ForegroundColor Cyan
 '@
-    $script = $script.Replace('__STATE__', $State).Replace('__NETWORK_VALUE__', [string]$networkValue)
+    $script = $script.Replace('__STATE__', $State).
+        Replace('__NETWORK_VALUE__', [string]$networkValue).
+        Replace('__HYBRID_VALUE__', [string]$hybridValue)
 
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
