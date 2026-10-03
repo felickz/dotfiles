@@ -514,6 +514,7 @@ $id = '__DOCK_ID__'
 $readyFile = '__READY_FILE__'
 $taskName = '__TASK_NAME__'
 $taskXmlEncoded = '__TASK_XML__'
+$payloadPath = '__PAYLOAD_PATH__'
 $log = Join-Path $env:TEMP 'go-sleep-dock.log'
 $taskXmlPath = Join-Path $env:TEMP 'go-sleep-restore-task.xml'
 
@@ -546,21 +547,24 @@ catch {
 }
 finally {
     Remove-Item $taskXmlPath -Force -ErrorAction SilentlyContinue
+    Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
 }
 '@
+        $payloadPath = Join-Path $env:TEMP "go-sleep-$PID.ps1"
         $payload = $payload.Replace('__DOCK_ID__', $dock.InstanceId).
             Replace('__READY_FILE__', $readyFile).
             Replace('__TASK_NAME__', $taskName).
-            Replace('__TASK_XML__', $taskXmlEncoded)
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
+            Replace('__TASK_XML__', $taskXmlEncoded).
+            Replace('__PAYLOAD_PATH__', $payloadPath)
+        [IO.File]::WriteAllText($payloadPath, $payload, [Text.Encoding]::Unicode)
 
         $sudo = Get-Command sudo.exe -ErrorAction SilentlyContinue
         if ($sudo) {
             Start-Process $sudo.Source -ArgumentList 'powershell.exe', '-NoProfile',
-                '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+                '-ExecutionPolicy', 'Bypass', '-File', "`"$payloadPath`""
         } else {
             Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile',
-                '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+                '-ExecutionPolicy', 'Bypass', '-File', "`"$payloadPath`""
         }
 
         $deadline = (Get-Date).AddSeconds(20)
@@ -568,6 +572,7 @@ finally {
             Start-Sleep -Milliseconds 250
         }
         if (-not (Test-Path $readyFile)) {
+            Remove-Item $payloadPath -Force -ErrorAction SilentlyContinue
             throw "The dock did not disconnect. See $env:TEMP\go-sleep-dock.log."
         }
         Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
