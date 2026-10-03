@@ -396,18 +396,92 @@ function Restart-Explorer {
 function Go-Sleep {
     <#
     .SYNOPSIS
-    Locks the computer and starts its Modern Standby transition.
+    Disconnects the Plugable dock data path, then enters Modern Standby.
     .DESCRIPTION
     Modern Standby is S0 low-power idle, not legacy S1-S3 sleep. The legacy
     SetSuspendState API selects S4 hibernation on this computer, so this function
     instead locks the workstation and powers off the displays. Screen-off is the
     supported entry path into Modern Standby.
+
+    SleepStudy proved that the dock's physical USB Audio 2.0 function keeps its TXHC
+    controller active even while the Plugable Audio devnode is disabled. When the dock
+    is connected, an elevated helper disables only its USB composite device before
+    screen-off and re-enables it after resume. USB-C charging remains online while the
+    data path is disabled.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
 
-    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, 'Lock and enter Modern Standby')) {
+    $dock = Get-PnpDevice -PresentOnly -Class USB -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.InstanceId -like 'USB\VID_17E9&PID_6011\*' -and
+            $_.InstanceId -notmatch '&MI_'
+        } |
+        Select-Object -First 1
+
+    $action = if ($dock) {
+        'Temporarily disconnect the Plugable dock data path, lock, and enter Modern Standby'
+    } else {
+        'Lock and enter Modern Standby'
+    }
+    if (-not $PSCmdlet.ShouldProcess($env:COMPUTERNAME, $action)) {
         return
+    }
+
+    $readyFile = $null
+    if ($dock) {
+        $readyFile = Join-Path $env:TEMP "go-sleep-$PID.ready"
+        Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
+
+        $payload = @'
+$ErrorActionPreference = 'Stop'
+$id = '__DOCK_ID__'
+$readyFile = '__READY_FILE__'
+$log = Join-Path $env:TEMP 'go-sleep-dock.log'
+
+"Go-Sleep $(Get-Date -Format o)" | Set-Content $log
+try {
+    & pnputil /disable-device $id | Add-Content $log
+    if ($LASTEXITCODE -ne 0) { throw "pnputil disable failed with exit code $LASTEXITCODE." }
+
+    $problemCode = (Get-PnpDeviceProperty -InstanceId $id `
+        -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data
+    if ($problemCode -ne 22) { throw "Dock did not disable (problem code $problemCode)." }
+
+    New-Item -ItemType File -Path $readyFile -Force | Out-Null
+
+    # User-mode execution pauses in Modern Standby. This delay therefore completes
+    # shortly after resume, then the finally block restores the dock.
+    Start-Sleep -Seconds 30
+}
+finally {
+    & pnputil /enable-device $id | Add-Content $log
+    if ($LASTEXITCODE -ne 0) {
+        "ERROR: pnputil enable failed with exit code $LASTEXITCODE." | Add-Content $log
+    }
+    Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
+}
+'@
+        $payload = $payload.Replace('__DOCK_ID__', $dock.InstanceId).
+            Replace('__READY_FILE__', $readyFile)
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
+
+        $sudo = Get-Command sudo.exe -ErrorAction SilentlyContinue
+        if ($sudo) {
+            Start-Process $sudo.Source -ArgumentList 'powershell.exe', '-NoProfile',
+                '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+        } else {
+            Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile',
+                '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+        }
+
+        $deadline = (Get-Date).AddSeconds(20)
+        while (-not (Test-Path $readyFile) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not (Test-Path $readyFile)) {
+            throw "The dock did not disconnect. See $env:TEMP\go-sleep-dock.log."
+        }
     }
 
     if (-not ('DeepSleep.NativeMethods' -as [type])) {
@@ -1268,7 +1342,7 @@ $functions = @(
     @{ Alias = "cpghas";  Name = "copilot-ghas";                 Desc = "Copilot CLI with GHAS MCP toolsets" }
     @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
-    @{ Alias = "";        Name = "Go-Sleep";                     Desc = "Lock and turn off displays to enter Modern Standby" }
+    @{ Alias = "";        Name = "Go-Sleep";                     Desc = "Disconnect dock data during Modern Standby, then restore it on resume" }
     @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
     @{ Alias = "";        Name = "Reset-Dock";                   Desc = "Recycle the dock in software instead of pulling the cable (admin)" }
     @{ Alias = "swmon";   Name = "Switch-MonitorSetup";          Desc = "Toggle multi-monitor extend <-> laptop screen only" }
