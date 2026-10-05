@@ -403,23 +403,44 @@ function Go-Sleep {
     instead locks the workstation and powers off the displays. Screen-off is the
     supported entry path into Modern Standby.
 
-    SleepStudy proved that the dock's physical USB Audio 2.0 function keeps its TXHC
-    controller active even while the Plugable Audio devnode is disabled. When the dock
-    is connected, an elevated helper starts a native display-event watcher, disables only
-    the dock's USB composite device, and waits. The watcher restores the dock after the
-    display remains on at resume. USB-C charging remains online while data is disabled.
+    SleepStudy proved that multiple devices behind the dock's common Realtek USB hub
+    keep its TXHC controller active. When the dock is connected, an elevated helper
+    starts a native display-event watcher, disables that hub, and waits. The watcher
+    restores the hub after the display remains on at resume. USB-C charging remains
+    online while data is disabled.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
 
-    $dock = Get-PnpDevice -PresentOnly -Class USB -ErrorAction SilentlyContinue |
+    $dockComposite = Get-PnpDevice -PresentOnly -Class USB -ErrorAction SilentlyContinue |
         Where-Object {
             $_.InstanceId -like 'USB\VID_17E9&PID_6011\*' -and
             $_.InstanceId -notmatch '&MI_'
         } |
         Select-Object -First 1
 
-    $action = if ($dock) {
+    $dockHub = $null
+    if ($dockComposite) {
+        $currentId = $dockComposite.InstanceId
+        for ($depth = 0; $depth -lt 6 -and $currentId; $depth++) {
+            $parentId = (Get-PnpDeviceProperty -InstanceId $currentId `
+                -KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data
+            if (-not $parentId) {
+                break
+            }
+            if ($parentId -like 'USB\VID_0BDA&PID_0423\*') {
+                $dockHub = Get-PnpDevice -InstanceId $parentId -ErrorAction SilentlyContinue
+                break
+            }
+            $currentId = $parentId
+        }
+
+        if (-not $dockHub) {
+            throw 'The Plugable dock was found, but its common Realtek USB hub was not.'
+        }
+    }
+
+    $action = if ($dockHub) {
         'Temporarily disconnect the Plugable dock data path, lock, and enter Modern Standby'
     } else {
         'Lock and enter Modern Standby'
@@ -429,7 +450,7 @@ function Go-Sleep {
     }
 
     $readyFile = $null
-    if ($dock) {
+    if ($dockHub) {
         $readyFile = Join-Path $env:TEMP "go-sleep-$PID.ready"
         Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
 
@@ -553,10 +574,10 @@ try {
 
     $problemCode = (Get-PnpDeviceProperty -InstanceId $id `
         -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction Stop).Data
-    if ($problemCode -ne 22) { throw "Dock did not disable (problem code $problemCode)." }
+    if ($problemCode -ne 22) { throw "Dock hub did not disable (problem code $problemCode)." }
 
     New-Item -ItemType File -Path $readyFile -Force | Out-Null
-    "Dock disabled; waiting for display-on event." | Add-Content $log
+    "Dock hub disabled; waiting for display-on event." | Add-Content $log
     $displayWatcher.Wait()
     "Display remained on for 10 seconds $(Get-Date -Format o)." | Add-Content $log
 }
@@ -585,7 +606,7 @@ finally {
 }
 '@
         $payloadPath = Join-Path $env:TEMP "go-sleep-$PID.ps1"
-        $payload = $payload.Replace('__DOCK_ID__', $dock.InstanceId).
+        $payload = $payload.Replace('__DOCK_ID__', $dockHub.InstanceId).
             Replace('__READY_FILE__', $readyFile).
             Replace('__PAYLOAD_PATH__', $payloadPath)
         [IO.File]::WriteAllText($payloadPath, $payload, [Text.Encoding]::Unicode)

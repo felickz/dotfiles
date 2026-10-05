@@ -154,11 +154,11 @@ It disables hybrid sleep so `Go-Sleep` does not write a hibernation image before
 sleep. Surface keyboard wake is also disabled while DeepSleep is on, so use the power
 button to wake the computer.
 
-`Go-Sleep` temporarily disables the Plugable dock's USB composite device, locks the
+`Go-Sleep` temporarily disables the Plugable dock's common Realtek USB hub, locks the
 workstation, and powers off the displays. Charging remains connected. A native
-display-event watcher restores the dock after the display remains on for 10 seconds
-following resume. This works around the dock's physical USB Audio 2.0 function holding
-its USB controller active even while its Windows audio endpoint is disabled.
+display-event watcher restores the hub after the display remains on for 10 seconds
+following resume. This disconnects both dock branches that Sleep Study found holding
+the TXHC USB controller active.
 
 ## Sending a vendor diagnostic bundle
 
