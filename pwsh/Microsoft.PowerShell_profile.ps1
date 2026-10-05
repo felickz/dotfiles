@@ -405,9 +405,9 @@ function Go-Sleep {
 
     SleepStudy proved that the dock's physical USB Audio 2.0 function keeps its TXHC
     controller active even while the Plugable Audio devnode is disabled. When the dock
-    is connected, an elevated helper registers a one-shot display-on task, disables only
-    the dock's USB composite device, and exits. The task restores the dock after the
-    display turns on at resume. USB-C charging remains online while data is disabled.
+    is connected, an elevated helper starts a native display-event watcher, disables only
+    the dock's USB composite device, and waits. The watcher restores the dock after the
+    display remains on at resume. USB-C charging remains online while data is disabled.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param()
@@ -441,24 +441,112 @@ $payloadPath = '__PAYLOAD_PATH__'
 $log = Join-Path $env:TEMP 'go-sleep-dock.log'
 
 "Go-Sleep $(Get-Date -Format o)" | Set-Content $log
-$queryText = "*[System[(EventID=179)]] and *[EventData[Data[@Name='SessionDisplayOn']='true']]"
-$query = [Diagnostics.Eventing.Reader.EventLogQuery]::new(
-    'Microsoft-Windows-Audio/Operational',
-    [Diagnostics.Eventing.Reader.PathType]::LogName,
-    $queryText
-)
-$watcher = [Diagnostics.Eventing.Reader.EventLogWatcher]::new($query)
-$signal = [Threading.AutoResetEvent]::new($false)
-$sourceIdentifier = "GoSleep.DisplayOn.$PID"
-$subscription = Register-ObjectEvent -InputObject $watcher -EventName EventRecordWritten `
-    -SourceIdentifier $sourceIdentifier -MessageData $signal -Action {
-        if (-not $Event.SourceEventArgs.EventException) {
-            [void]$Event.MessageData.Set()
+Add-Type -TypeDefinition @"
+using System;
+using System.Diagnostics.Eventing.Reader;
+using System.Threading;
+
+namespace GoSleep
+{
+    public sealed class DisplayOnWatcher : IDisposable
+    {
+        private readonly EventLogWatcher watcher;
+        private readonly ManualResetEventSlim signal = new ManualResetEventSlim(false);
+        private readonly object syncRoot = new object();
+        private readonly int stableMilliseconds;
+        private Timer stableTimer;
+        private Exception eventException;
+
+        public DisplayOnWatcher(string logName, string queryText, int stableMilliseconds)
+        {
+            this.stableMilliseconds = stableMilliseconds;
+            var query = new EventLogQuery(logName, PathType.LogName, queryText);
+            watcher = new EventLogWatcher(query);
+            watcher.EventRecordWritten += OnEventRecordWritten;
+        }
+
+        public void Start()
+        {
+            watcher.Enabled = true;
+        }
+
+        public void Wait()
+        {
+            signal.Wait();
+            if (eventException != null)
+                throw new InvalidOperationException("The display event watcher failed.", eventException);
+        }
+
+        private void OnEventRecordWritten(object sender, EventRecordWrittenEventArgs args)
+        {
+            if (args.EventException != null)
+            {
+                eventException = args.EventException;
+                signal.Set();
+                return;
+            }
+
+            if (args.EventRecord == null)
+                return;
+
+            using (args.EventRecord)
+            {
+                if (args.EventRecord.Properties.Count < 2)
+                    return;
+
+                bool displayOn;
+                if (!Boolean.TryParse(
+                    Convert.ToString(args.EventRecord.Properties[1].Value),
+                    out displayOn))
+                    return;
+
+                lock (syncRoot)
+                {
+                    if (stableTimer != null)
+                    {
+                        stableTimer.Dispose();
+                        stableTimer = null;
+                    }
+
+                    if (displayOn)
+                    {
+                        stableTimer = new Timer(
+                            state => signal.Set(),
+                            null,
+                            stableMilliseconds,
+                            Timeout.Infinite);
+                    }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            watcher.Enabled = false;
+            watcher.EventRecordWritten -= OnEventRecordWritten;
+            watcher.Dispose();
+            lock (syncRoot)
+            {
+                if (stableTimer != null)
+                {
+                    stableTimer.Dispose();
+                    stableTimer = null;
+                }
+            }
+            signal.Dispose();
         }
     }
+}
+"@
+
+$displayWatcher = [GoSleep.DisplayOnWatcher]::new(
+    'Microsoft-Windows-Audio/Operational',
+    '*[System[(EventID=179)]]',
+    10000
+)
 
 try {
-    $watcher.Enabled = $true
+    $displayWatcher.Start()
 
     & pnputil /disable-device $id | Add-Content $log
     if ($LASTEXITCODE -ne 0) { throw "pnputil disable failed with exit code $LASTEXITCODE." }
@@ -469,19 +557,15 @@ try {
 
     New-Item -ItemType File -Path $readyFile -Force | Out-Null
     "Dock disabled; waiting for display-on event." | Add-Content $log
-    [void]$signal.WaitOne()
-    "Display-on event received $(Get-Date -Format o)." | Add-Content $log
+    $displayWatcher.Wait()
+    "Display remained on for 10 seconds $(Get-Date -Format o)." | Add-Content $log
 }
 catch {
     "ERROR: $($_.Exception.Message)" | Add-Content $log
     throw
 }
 finally {
-    $watcher.Enabled = $false
-    Unregister-Event -SourceIdentifier $sourceIdentifier -ErrorAction SilentlyContinue
-    Remove-Job -Name $sourceIdentifier -Force -ErrorAction SilentlyContinue
-    $watcher.Dispose()
-    $signal.Dispose()
+    $displayWatcher.Dispose()
 
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         & pnputil /enable-device $id | Add-Content $log

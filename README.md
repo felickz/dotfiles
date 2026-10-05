@@ -155,10 +155,10 @@ sleep. Surface keyboard wake is also disabled while DeepSleep is on, so use the 
 button to wake the computer.
 
 `Go-Sleep` temporarily disables the Plugable dock's USB composite device, locks the
-workstation, and powers off the displays. Charging remains connected. A one-shot
-display-on event watcher restores the dock after resume. This works around the dock's
-physical USB Audio 2.0 function holding its USB controller active even while its
-Windows audio endpoint is disabled.
+workstation, and powers off the displays. Charging remains connected. A native
+display-event watcher restores the dock after the display remains on for 10 seconds
+following resume. This works around the dock's physical USB Audio 2.0 function holding
+its USB controller active even while its Windows audio endpoint is disabled.
 
 ## Sending a vendor diagnostic bundle
 
