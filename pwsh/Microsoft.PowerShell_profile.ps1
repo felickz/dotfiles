@@ -393,6 +393,49 @@ function Restart-Explorer {
     else        { Write-Warning "Explorer did not come back. Start it from Task Manager > Run new task > explorer.exe" }
 }
 
+function Turn-OffMonitors {
+    <#
+    .SYNOPSIS
+    Turns off all displays until keyboard or mouse input resumes them.
+    .DESCRIPTION
+    Sends Windows' monitor-power-off command without locking the workstation,
+    entering sleep, or disconnecting the dock.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
+    if (-not $PSCmdlet.ShouldProcess('all displays', 'Turn off until input resumes them')) {
+        return
+    }
+
+    if (-not ('MonitorPower.NativeMethods' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace MonitorPower
+{
+    public static class NativeMethods
+    {
+        [DllImport("user32.dll")]
+        public static extern IntPtr SendMessage(
+            IntPtr hWnd,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam);
+    }
+}
+'@
+    }
+
+    [void][MonitorPower.NativeMethods]::SendMessage(
+        [IntPtr]0xffff,
+        0x0112,
+        [IntPtr]0xf170,
+        [IntPtr]2
+    )
+}
+
 function Go-Sleep {
     <#
     .SYNOPSIS
@@ -1487,6 +1530,7 @@ $aliasMap = [ordered]@{
     'swmon'               = 'Switch-MonitorSetup'
     'Switch-Monitor-Setup' = 'Switch-MonitorSetup'
     'rtmon'               = 'Restart-Monitors'
+    'monoff'              = 'Turn-OffMonitors'
 
     # Copilot CLI wrappers
     'cpall'               = 'copilot-all'
@@ -1521,6 +1565,7 @@ $functions = @(
     @{ Alias = "cpghas";  Name = "copilot-ghas";                 Desc = "Copilot CLI with GHAS MCP toolsets" }
     @{ Alias = "cpdep";   Name = "copilot-depcheck";             Desc = "Copilot CLI with Dependabot dep vulnerability scanning" }
     @{ Alias = "rtexp";   Name = "Restart-Explorer";             Desc = "Kill and restart Windows Explorer + itype.exe" }
+    @{ Alias = "monoff";  Name = "Turn-OffMonitors";             Desc = "Turn off all displays until keyboard or mouse input" }
     @{ Alias = "";        Name = "Go-Sleep";                     Desc = "Disconnect dock data during Modern Standby, then restore it on resume" }
     @{ Alias = "rtmon";   Name = "Restart-Monitors";             Desc = "Wake USB-C dock monitors stuck after sleep (admin)" }
     @{ Alias = "";        Name = "Reset-Dock";                   Desc = "Recycle the dock in software instead of pulling the cable (admin)" }
