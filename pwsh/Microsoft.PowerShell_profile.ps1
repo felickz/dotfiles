@@ -1180,8 +1180,11 @@ if ($deskModule) { Import-Module $deskModule -Force -DisableNameChecking }
 # Moving a machine to a different monitor, or switching the side panels to USB-C after
 # upgrading them to P2725DE, is an edit to this map only. Run "gmin -Detailed" to see
 # which inputs each monitor actually advertises.
+#
+# Center is on HDMI: the dock's DP output to it was swapped for HDMI on the dock vendor's
+# advice. Re-run Save-DeskProfileMap (or re-register the guard) after editing this map.
 $Global:DeskProfiles = [ordered]@{
-    main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
+    main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'HDMI'; Right = 'DP' } }
     mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
     personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'USBC' } }
 }

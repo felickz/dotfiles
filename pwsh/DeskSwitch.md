@@ -13,20 +13,21 @@ gmin -Detailed    # what each monitor is on, and what it supports
 | Position | Monitor | Inputs it advertises | Used by |
 |---|---|---|---|
 | Left | Dell P2725DE | DP, HDMI, **USB-C** | main on DP, personal Surface on USB-C |
-| Center | Dell P3425WE (34" UW) | **USB-C**, DP, HDMI | main only |
+| Center | Dell P3425WE (34" UW) | **USB-C**, DP, HDMI | main only, on HDMI |
 | Right | Dell P2725DE | DP, HDMI, **USB-C** | main on DP, Mac on USB-C |
 | Below | Surface Laptop Studio 2 panel | *(no DDC/CI)* | main |
 
 | Easy-Switch | Machine | Hostname | Result |
 |---|---|---|---|
-| 1 | Surface Laptop Studio 2 | `SURFACESTUDIO2` | all three monitors on DP |
+| 1 | Surface Laptop Studio 2 | `SURFACESTUDIO2` | sides on DP, center on HDMI |
 | 2 | Mac M5 Pro | `H17MX7TXMT` | right monitor to USB-C |
 | 3 | Surface Laptop 5 | `SURFACE-LAPTOP5` | left monitor to USB-C |
 
-Only **DP** and **USB-C** are used in practice. HDMI is listed because the monitors
-advertise it, but nothing on this desk is wired to it - the left panel used to be a
-P2725D whose only second input was HDMI, and it was replaced by a USB-C P2725DE. Passing
-`HDMI` explicitly still works; nothing chooses it on your behalf.
+All three inputs are in use. The center monitor is on **HDMI**: the dock's output to it
+was moved from DP to HDMI on the dock vendor's advice, so the main profile claims it as
+`HDMI`. If that cable moves again, change `Center` in `$DeskProfiles` and run
+`Save-DeskProfileMap`, or the guard will read the new input as "taken by another machine"
+and detach the monitor.
 
 ## Why the Easy-Switch key is not the trigger
 
@@ -57,7 +58,7 @@ normal remappable mouse button to that shortcut. The three MX Keys device-select
 buttons and a mouse's underside Easy-Switch button cannot be used as the trigger.
 
 This also means the return path is automatic: come back to the main PC, type, and it
-pulls all three monitors back to DP.
+pulls all three monitors back to its inputs.
 
 ## How the switching works
 
@@ -116,7 +117,7 @@ Both Windows machines run the same module. The profile map decides what each cla
 
 ```powershell
 $Global:DeskProfiles = [ordered]@{
-    main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'DP'; Right = 'DP' } }
+    main     = @{ HostName = 'SURFACESTUDIO2'  ; Monitors = [ordered]@{ Left = 'DP'; Center = 'HDMI'; Right = 'DP' } }
     mac      = @{ HostName = 'H17MX7TXMT'      ; Monitors = [ordered]@{ Right = 'USBC' } }
     personal = @{ HostName = 'SURFACE-LAPTOP5' ; Monitors = [ordered]@{ Left  = 'USBC' } }
 }
@@ -250,7 +251,7 @@ concludes someone else owns it:
 ```
 Role   Monitor                        Input Expected Owned
 Left   Dell P2725DE (DisplayPort 1_4) USBC  DP       False
-Center Dell P3425WE(DisplayPort 1.4)  DP    DP       True
+Center Dell P3425WE(DisplayPort 1.4)  HDMI  HDMI     True
 ```
 
 `Expected` comes from the `$DeskProfiles` entry matching this hostname - the map already
@@ -415,7 +416,8 @@ failed did so because it was aimed at the wrong path.
 | P3425WE (centre) | `DISPLAY30-33` | **Intel Iris Xe** via the dock's alt-mode output | dock power-cycle only |
 
 The centre monitor hangs off the dock's **alt-mode output**: DisplayPort passed through to the
-laptop's own GPU, not rendered by DisplayLink. So:
+laptop's own GPU, not rendered by DisplayLink. (The dock-to-monitor cable is now HDMI, on the
+dock vendor's advice; the laptop-to-dock leg is still DP alt mode.) So:
 
 - `rtmon` resets failed DisplayLink devices and can never reach it. It used to log
   "No failed DisplayLink adapters found" and stop, which read like a no-op rather than the
